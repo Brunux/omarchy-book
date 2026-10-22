@@ -1,0 +1,92 @@
+#!/bin/bash
+
+# The lite profile's tests, from this directory alone.
+
+set -euo pipefail
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." || exit 1
+
+pass() { echo "ok - $*"; }
+fail() {
+  echo "not ok - $1"
+  [[ -z ${2:-} ]] || printf '%s\n' "$2" | sed 's/^/# /'
+  exit 1
+}
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+stub=$work/bin
+mkdir -p "$stub"
+for tool in systemctl xdg-mime omarchy-toggle omarchy-plugin-disable; do
+  printf '#!/bin/bash\necho "%s $*" >>"%s/calls"\n' "$tool" "$work" >"$stub/$tool"
+done
+# No shell running, unless a test says so.
+printf '#!/bin/bash\n[[ -e "%s/shell-running" ]]\n' "$work" >"$stub/omarchy-shell"
+chmod +x "$stub"/*
+
+home=$work/home
+mkdir -p "$home/.config/omarchy" "$home/.config/hypr" "$work/omarchy/config/omarchy"
+# Omarchy's stock shell.json, reduced to what the edit touches.
+cat >"$work/omarchy/config/omarchy/shell.json" <<'JSON'
+{"version": 1,
+ "bar": {"layout": {"left": [{"id": "omarchy.menu"}], "right": [{"id": "omarchy.tray"}, {"id": "omarchy.agents"}, {"id": "omarchy.power"}]}},
+ "dock": {"position": "bottom"},
+ "plugins": []}
+JSON
+echo '-- the user owns this file' >"$home/.config/hypr/bindings.lua"
+lite() {
+  HOME=$home XDG_CONFIG_HOME="" XDG_STATE_HOME="" OMARCHY_PATH=$work/omarchy OMARCHY_LITE_SYSTEM_STATE=$work/system \
+    PATH="$stub:$PATH" bin/omarchy-lite "$@"
+}
+
+lite apply-user >/dev/null || fail "apply-user runs"
+shell=$home/.config/omarchy/shell.json
+[[ $(jq -c '.bar.layout.right | map(.id)' "$shell") == '["omarchy.tray","omarchy.power"]' ]] ||
+  fail "without a running shell, the agents widget leaves the bar, as setEnabled does for a bar widget" "$(cat "$shell")"
+[[ $(jq -c '.disabledPlugins' "$shell") == '["omarchy.dock"]' ]] ||
+  fail "and the dock, a first-party service, goes into disabledPlugins" "$(cat "$shell")"
+[[ $(jq -r '.dock.position' "$shell") == "bottom" ]] || fail "the rest of shell.json is kept"
+pass "with no shell running, shell.json is changed the way the shell itself disables each kind of plugin"
+
+grep -qF 'hl.config({ animations = { enabled = false } })' "$home/.config/hypr/looknfeel.lua" || fail "animations are turned off in the user's looknfeel.lua"
+grep -qF -- '-- the user owns this file' "$home/.config/hypr/bindings.lua" && grep -qF '{ launch = "pcmanfm" }' "$home/.config/hypr/bindings.lua" ||
+  fail "the file manager binding is appended to the user's bindings.lua, keeping what was there" "$(cat "$home/.config/hypr/bindings.lua")"
+grep -qx 'xdg-mime default pcmanfm.desktop inode/directory' "$work/calls" || fail "PCManFM opens folders"
+grep -qx 'omarchy-toggle crash-capture-off on' "$work/calls" || fail "the crash watcher is switched off with Omarchy's own toggle"
+pass "apply-user turns animations off, makes PCManFM the file manager and switches the crash watcher off"
+
+# The owner deletes the bindings block: the next run must not put it back.
+printf -- '-- the user owns this file\n' >"$home/.config/hypr/bindings.lua"
+cp "$shell" "$work/shell.before"
+: >"$work/calls"
+lite apply-user >/dev/null || fail "apply-user runs again"
+[[ ! -s $work/calls ]] || fail "a second run changes nothing" "$(cat "$work/calls")"
+! grep -q pcmanfm "$home/.config/hypr/bindings.lua" || fail "a block the owner deleted stays deleted"
+cmp -s "$shell" "$work/shell.before" || fail "shell.json is not touched again"
+pass "each step runs once: what the owner undoes stays undone"
+
+# With the shell running, the shell does the work.
+rm -rf "$home/.local/state/omarchy-lite"
+: >"$work/shell-running"
+: >"$work/calls"
+lite apply-user >/dev/null
+grep -qx 'omarchy-plugin-disable omarchy.dock' "$work/calls" && grep -qx 'omarchy-plugin-disable omarchy.agents' "$work/calls" ||
+  fail "with the shell running, its own plugin command disables them" "$(cat "$work/calls")"
+[[ $(grep -c 'omarchy-lite: lighter effects (begin)' "$home/.config/hypr/looknfeel.lua") == 1 ]] || fail "a block already present is not added twice"
+pass "with the shell running, its plugin command does the change, and blocks are never duplicated"
+
+: >"$work/calls"
+lite apply-system >/dev/null || fail "apply-system runs"
+grep -qx 'systemctl disable --quiet cups.service' "$work/calls" && grep -qx 'systemctl enable --quiet cups.socket' "$work/calls" ||
+  fail "CUPS moves to its socket" "$(cat "$work/calls")"
+grep -qx 'systemctl enable --quiet avahi-daemon.socket' "$work/calls" || fail "avahi moves to its socket"
+: >"$work/calls"
+lite apply-system >/dev/null
+[[ ! -s $work/calls ]] || fail "apply-system runs once"
+pass "apply-system moves CUPS and avahi to socket activation, once"
+
+if HOME=$home PATH="$stub:$PATH" bin/omarchy-lite bogus >/dev/null 2>&1; then fail "an unknown command is refused"; fi
+"./install" "$work/root" >/dev/null || fail "install stages the package"
+[[ -x $work/root/usr/bin/omarchy-lite && -f $work/root/usr/share/omarchy-lite/subtract.packages && -f $work/root/usr/lib/environment.d/60-omarchy-lite.conf ]] ||
+  fail "install stages the command, its package lists and the session environment"
+grep -qx 'MALLOC_ARENA_MAX=2' "$work/root/usr/lib/environment.d/60-omarchy-lite.conf" || fail "the session gets two malloc arenas"
+pass "install stages the command, the package lists and the session environment"

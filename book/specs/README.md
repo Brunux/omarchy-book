@@ -28,7 +28,7 @@ Copy [`0000-template.md`](0000-template.md) to the next free number. Requirement
 | 0002 | [Devices and kernels](0002-devices-and-kernels.md): the board and kernel model, imported from pmaports | Implemented |
 | 0003 | [Boot package](0003-boot-package.md): `omarchy-chromebook-boot`, the kernel partition, A/B kernel updates | Implemented |
 | 0004 | [Image and install](0004-image-and-install.md): the card image, first boot, and installing to internal storage | Implemented |
-| 0005 | [Memory budget](0005-memory-budget.md): a session under 1 GiB, measured first | Draft |
+| 0005 | [Memory budget](0005-memory-budget.md): an idle desktop under 1 GiB, and the lite profile | Implemented (budget unmeasured) |
 | 0006 | [Package repository](0006-package-repository.md): building and publishing the packages | Draft |
 | 0007 | [Upstream sync](0007-upstream-sync.md): merging omacom/omarchy and what a merge must check | Accepted |
 

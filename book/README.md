@@ -11,7 +11,9 @@ This directory is the only part of the fork that upstream [omacom/omarchy](https
 | [`specs/`](specs/) | The specs this port is built from, one per feature, with their status. Start at [`specs/README.md`](specs/README.md). |
 | [`devices/`](devices/) | One directory per supported board: its postmarketOS `deviceinfo`, the device-tree `compatible` strings that identify it, its kernel, command line, early modules and packages. Adding a board is adding a directory ([specs/0002](specs/0002-devices-and-kernels.md)). |
 | [`kernels/`](kernels/) | One directory per kernel flavor: an Arch `PKGBUILD`, the kernel config and the patch series, imported from pmaports. Several boards share a flavor. |
-| [`packages/`](packages/) | The platform packages, in the shape of [omacom/omarchy-mac-pkgs](https://github.com/omacom/omarchy-mac-pkgs): `omarchy-chromebook-boot` (the depthcharge boot chain behind `omarchy-lifecycle-dispatch`), `omarchy-chromebook` (runtime setup and platform files), and the recipes for tools no configured repository carries. |
+| [`packages/`](packages/) | The port's packages, in the shape of [omacom/omarchy-mac-pkgs](https://github.com/omacom/omarchy-mac-pkgs): `omarchy-chromebook-boot` (the depthcharge boot chain behind `omarchy-lifecycle-dispatch`), `omarchy-chromebook` (runtime setup and platform files) and `omarchy-lite` (the low-memory profile). |
+| [`recipes/`](recipes/) | Recipes for tools no configured repository carries (`depthcharge-tools`). |
+| [`keys/`](keys/) | Public package signing keys the image builder trusts. |
 | [`tools/`](tools/) | Maintainer tools: importing a board from pmaports, building a card image, measuring a session's memory. |
 
 ## How it fits Omarchy
@@ -31,7 +33,7 @@ A Chromebook's firmware, depthcharge, has no UEFI and reads no filesystem. It lo
 
 ## Status
 
-See [`specs/README.md`](specs/README.md) for each feature's state. In short: the platform registration is done and tested; the device, kernel, boot package and image tooling are written and tested off-device, and wait for their first hardware run on the Google Hayato (MT8192, `google-asurada`); the memory work starts from a measurement on that machine.
+See [`specs/README.md`](specs/README.md) for each feature's state. In short: the platform registration is done and tested; the device, kernel, boot package and image tooling are written and tested off-device, and wait for their first hardware run on the Google Hayato (MT8192, `google-asurada`); the lite profile (on by default on Chromebooks) is built and waits for that machine's first measurement.
 
 ## Provenance
 

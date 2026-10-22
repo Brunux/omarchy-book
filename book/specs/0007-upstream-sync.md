@@ -34,6 +34,7 @@ done
 
 book/packages/omarchy-chromebook-boot/test/all
 book/packages/omarchy-chromebook/test/all
+book/packages/omarchy-lite/test/all
 book/tools/check-devices
 ```
 

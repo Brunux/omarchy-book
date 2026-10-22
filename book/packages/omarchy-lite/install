@@ -1,0 +1,18 @@
+#!/bin/bash
+
+# Stage omarchy-lite into DESTDIR. Enables and starts nothing.
+
+set -euo pipefail
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
+
+destination=${1:?Usage: ./install DESTDIR}
+[[ $destination == /* && $destination != "/" ]] || { echo "Use an absolute staging directory" >&2; exit 1; }
+
+install -Dm755 bin/omarchy-lite "$destination/usr/bin/omarchy-lite"
+for file in share/*; do install -Dm644 "$file" "$destination/usr/share/omarchy-lite/${file##*/}"; done
+while IFS= read -r -d '' file; do
+  install -Dm644 "$file" "$destination/${file#files/}"
+done < <(find files -type f -print0)
+
+install -Dm644 README.md "$destination/usr/share/doc/omarchy-lite/README.md"
+install -Dm644 LICENSE "$destination/usr/share/licenses/omarchy-lite/LICENSE"

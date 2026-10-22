@@ -1,0 +1,206 @@
+#!/bin/bash
+
+# omarchy:summary=Apply the lite profile: Omarchy for low-memory machines
+# omarchy:args=[enable [--remove-packages]|apply-system|apply-user|status]
+#
+# The lite profile (book/specs/0005-memory-budget.md) keeps the Omarchy
+# desktop and changes only what costs memory at an idle desktop, through the
+# knobs Omarchy already has:
+#
+#   system  CUPS and avahi start on first use (their sockets) instead of at boot
+#   user    the shell's dock and agents widget off (as `omarchy plugin disable`
+#           does); Hyprland animations off and PCManFM as the file manager (in
+#           ~/.config/hypr, the files meant for overrides); the crash watcher
+#           off (`omarchy-toggle crash-capture-off on`)
+#   session MALLOC_ARENA_MAX=2 (/usr/lib/environment.d/60-omarchy-lite.conf)
+#   packages Nautilus, the CJK input methods and udiskie left out of the
+#           default set, PCManFM in (share/*.packages; the image builder
+#           applies them)
+#
+# On a Chromebook, omarchy-chromebook's setup-system and setup-user apply it
+# when this package is installed. Elsewhere, `omarchy-lite enable` does.
+#
+# Each step runs once and leaves a marker, so whatever the owner changes back
+# afterwards stays changed. Every user-file change is a block between
+# "omarchy-lite: ... (begin)" and "(end)" comments: delete the block to undo it.
+
+set -euo pipefail
+
+share=$(readlink -f -- "${BASH_SOURCE[0]}")
+share=${share%/bin/*}/share/omarchy-lite
+[[ -d $share ]] || share=$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/../share" && pwd)
+
+usage() {
+  echo "Usage: omarchy-lite [enable [--remove-packages]|apply-system|apply-user|status]" >&2
+  exit 2
+}
+
+names() {
+  sed -e 's/[[:space:]]*#.*$//' -e '/^[[:space:]]*$/d' "$1"
+}
+
+# step <markers> <name> <command...>: run once.
+step() {
+  local markers=$1 name=$2
+  shift 2
+  [[ ! -e $markers/$name ]] || return 0
+  "$@"
+  mkdir -p "$markers"
+  : >"$markers/$name"
+}
+
+# ── system ───────────────────────────────────────────────────────────────────
+
+system_markers() {
+  if (( EUID != 0 )) && [[ -n ${OMARCHY_LITE_SYSTEM_STATE:-} ]]; then
+    echo "$OMARCHY_LITE_SYSTEM_STATE"
+  else
+    echo /var/lib/omarchy-lite
+  fi
+}
+
+# A service that only answers requests waits on its socket instead.
+socket_activate() {
+  local service=$1 socket=$2
+
+  systemctl disable --quiet "$service" 2>/dev/null || true
+  systemctl enable --quiet "$socket"
+  echo "$service now starts on first use ($socket)"
+}
+
+apply_system() {
+  local markers
+  markers=$(system_markers)
+  step "$markers" cups-socket socket_activate cups.service cups.socket
+  step "$markers" avahi-socket socket_activate avahi-daemon.service avahi-daemon.socket
+}
+
+# ── user ─────────────────────────────────────────────────────────────────────
+
+user_markers() {
+  echo "${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-lite"
+}
+
+config_home() {
+  echo "${XDG_CONFIG_HOME:-$HOME/.config}"
+}
+
+# The dock (a first-party service) and the agents widget (a bar widget) off.
+# With the shell running, ask it, so the change is the shell's own. Without
+# one, change shell.json the way the shell's setEnabled does: a bar widget
+# leaves the bar, a first-party plugin of another kind goes into
+# disabledPlugins[].
+shell_plugins() {
+  local file id
+
+  if omarchy-shell shell ping >/dev/null 2>&1; then
+    for id in omarchy.dock omarchy.agents; do
+      omarchy-plugin-disable "$id" >/dev/null
+    done
+  else
+    file=$(config_home)/omarchy/shell.json
+    if [[ ! -f $file ]]; then
+      mkdir -p "${file%/*}"
+      cp "${OMARCHY_PATH:?OMARCHY_PATH is not set}/config/omarchy/shell.json" "$file"
+    fi
+    jq '
+      (if (.bar.layout | type) == "object" then
+        .bar.layout |= with_entries(.value |= map(select(.id != "omarchy.agents")))
+      else . end)
+      | .disabledPlugins = (((.disabledPlugins // []) + ["omarchy.dock"]) | unique)
+    ' "$file" >"$file.tmp"
+    mv -f "$file.tmp" "$file"
+  fi
+  echo "The shell's dock and agents widget are off (omarchy plugin enable brings them back)"
+}
+
+# hypr_block <file> <name> <lines...>: append a marked block once.
+hypr_block() {
+  local file=$1 name=$2
+  shift 2
+
+  if [[ -f $file ]] && grep -qF -- "-- omarchy-lite: $name (begin)" "$file"; then
+    return 0
+  fi
+  mkdir -p "${file%/*}"
+  {
+    echo
+    echo "-- omarchy-lite: $name (begin). Delete this block to undo it."
+    printf '%s\n' "$@"
+    echo "-- omarchy-lite: $name (end)"
+  } >>"$file"
+}
+
+hypr_effects() {
+  hypr_block "$(config_home)/hypr/looknfeel.lua" "lighter effects" \
+    'hl.config({ animations = { enabled = false } })'
+  echo "Hyprland animations are off"
+}
+
+file_manager() {
+  hypr_block "$(config_home)/hypr/bindings.lua" "PCManFM as the file manager" \
+    'o.rebind("SUPER + SHIFT + F", "File manager", { launch = "pcmanfm" })' \
+    'o.rebind("SUPER + ALT + SHIFT + F", "File manager (cwd)", "uwsm-app -- pcmanfm \"$(omarchy-cmd-terminal-cwd)\"")'
+  xdg-mime default pcmanfm.desktop inode/directory
+  echo "PCManFM opens folders and Super+Shift+F"
+}
+
+crash_watch() {
+  omarchy-toggle crash-capture-off on
+  systemctl --user stop omarchy-crash-watch.service 2>/dev/null || true
+  echo "The crash watcher is off (omarchy-toggle-crash-capture brings it back)"
+}
+
+apply_user() {
+  local markers
+  (( EUID != 0 )) || { echo "Error: apply-user runs as the user, not root" >&2; exit 1; }
+  markers=$(user_markers)
+  step "$markers" shell-plugins shell_plugins
+  step "$markers" hypr-effects hypr_effects
+  step "$markers" file-manager file_manager
+  step "$markers" crash-watch crash_watch
+}
+
+# ── commands ─────────────────────────────────────────────────────────────────
+
+enable() {
+  local remove=0 package
+  local -a installed=()
+
+  [[ ${1:-} != "--remove-packages" ]] || remove=1
+  (( EUID != 0 )) || { echo "Error: run omarchy-lite enable as your user; it asks for sudo itself" >&2; exit 1; }
+
+  mapfile -t installed < <(names "$share/add.packages")
+  omarchy-pkg-add "${installed[@]}"
+  if (( remove )); then
+    while IFS= read -r package; do
+      omarchy-pkg-present "$package" && omarchy-pkg-drop "$package"
+    done < <(names "$share/subtract.packages")
+  fi
+  sudo "$(readlink -f -- "${BASH_SOURCE[0]}")" apply-system
+  apply_user
+  echo "The lite profile is on. Log out and back in for the session environment."
+}
+
+status() {
+  local name markers
+  markers=$(system_markers)
+  for name in cups-socket avahi-socket; do
+    printf '%-14s %s\n' "$name" "$([[ -e $markers/$name ]] && echo applied || echo -)"
+  done
+  markers=$(user_markers)
+  for name in shell-plugins hypr-effects file-manager crash-watch; do
+    printf '%-14s %s\n' "$name" "$([[ -e $markers/$name ]] && echo applied || echo -)"
+  done
+}
+
+case ${1:-} in
+  enable) shift; enable "$@" ;;
+  apply-system)
+    (( EUID == 0 )) || [[ -n ${OMARCHY_LITE_SYSTEM_STATE:-} ]] || { echo "Error: apply-system needs root" >&2; exit 1; }
+    apply_system
+    ;;
+  apply-user) apply_user ;;
+  status) status ;;
+  *) usage ;;
+esac

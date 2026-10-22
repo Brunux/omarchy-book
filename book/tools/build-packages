@@ -10,6 +10,7 @@
 #   depthcharge-tools          book/recipes/
 #   omarchy-chromebook-boot    book/packages/
 #   omarchy-chromebook         book/packages/
+#   omarchy-lite               book/packages/
 #   linux-book-<flavor>        book/kernels/, one per flavor
 #   omarchy-dev, omarchy-settings-dev
 #                              omacom/omarchy-pkgs' own recipes, built from
@@ -60,6 +61,7 @@ build "$book/recipes/depthcharge-tools"
 # need not be installed to build or test them.
 build "$book/packages/omarchy-chromebook-boot" --nodeps
 build "$book/packages/omarchy-chromebook" --nodeps
+build "$book/packages/omarchy-lite" --nodeps
 if (( ! skip_kernels )); then
   for kernel in "$book"/kernels/*/; do
     build "$kernel"

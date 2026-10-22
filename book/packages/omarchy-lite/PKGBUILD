@@ -1,0 +1,25 @@
+# Maintainer: Omarchy Book
+#
+# The lite profile: Omarchy for machines with little memory, through the knobs
+# Omarchy already has (book/specs/0005-memory-budget.md). On by default on
+# Chromebooks; `omarchy-lite enable` anywhere else.
+
+pkgname=omarchy-lite
+pkgver=$(<version)
+pkgrel=1
+pkgdesc='Omarchy lite profile: the same desktop with less resident at idle'
+arch=(any)
+url='https://github.com/Brunux/omarchy-book/tree/quattro/book/packages/omarchy-lite'
+license=(MIT)
+# jq edits shell.json when the shell is not running; xdg-utils sets the
+# default file manager; pcmanfm-gtk3 is that file manager.
+depends=(bash jq pcmanfm-gtk3 systemd xdg-utils)
+checkdepends=(bash coreutils jq)
+
+package() {
+  "$startdir/install" "$pkgdir"
+}
+
+check() {
+  "$startdir/test/all"
+}

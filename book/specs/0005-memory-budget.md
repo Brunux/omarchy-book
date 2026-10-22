@@ -1,7 +1,7 @@
 # 0005: Memory budget
 
-Status: Draft (waiting for the first measurement)
-Related: [`book/tools/memory-report`](../tools/memory-report), [`docs/omarchy-shell.md`](../../docs/omarchy-shell.md), [`plans/server.md`](../../plans/server.md) (editions), LazyOS [`docs/optimization.md`](https://github.com/Brunux/LazyOS/blob/main/docs/optimization.md)
+Status: Accepted (the lite profile is implemented; the budget is verified on the first image)
+Related: [`book/packages/omarchy-lite/`](../packages/omarchy-lite/), [`book/tools/memory-report`](../tools/memory-report), [`docs/omarchy-shell.md`](../../docs/omarchy-shell.md), [`plans/server.md`](../../plans/server.md) (editions), LazyOS [`docs/optimization.md`](https://github.com/Brunux/LazyOS/blob/main/docs/optimization.md)
 
 ## Problem
 
@@ -40,21 +40,48 @@ Ordered by expected size, from Omarchy's session definition (`default/hypr/autos
 
 What LazyOS already showed on this hardware, and this port already has: MGLRU, `transparent_hugepage=madvise`, zram with zstd at the size of RAM (Omarchy's own default), systemd-oomd, a capped journal.
 
-## Requirements (to be finished after the first measurement)
+## Decisions (2026-10-22, the maintainer)
 
-- **R5.1** `memory-report` runs unchanged on this port, omarchybook and LazyOS, and reports the budget's number. *Check:* the three reports in Verification.
-- **R5.2** An idle Omarchy desktop on a 4 GB Chromebook stays under 1024 MiB "used". *Check:* the protocol, median of three.
-- **R5.3** Every change made for R5.2 names the measured saving in its commit, and its kind (setting, upstream PR, default set, replacement).
+- **The budget is the idle desktop**, measured with `free`'s "used" as in the protocol. A working session (Chromium and friends) is out of scope for now.
+- **The lite profile is on by default on Chromebooks**, and built as an opt-in profile any Omarchy machine can use.
+- **It may make all four kinds of change** proposed: trim the shell, install CJK input on demand, lighter Hyprland effects, fewer always-on services. **And replace the file manager**: PCManFM instead of Nautilus, "for now".
+- **No measurement first**: build the profile from the estimates above, and measure once this port's first image boots. The candidates table stays the plan of record until then.
 
-## Open questions
+## The lite profile
 
-These change what gets built, so they are the maintainer's call:
+`omarchy-lite` ([`book/packages/omarchy-lite/`](../packages/omarchy-lite/)), applied on a Chromebook by `omarchy-chromebook`'s `setup-system` and `setup-user` whenever it is installed, and built into card images by default (`build-image --profile lite`). Elsewhere, `omarchy-lite enable`.
 
-1. Is the budget the idle desktop only, or also a working session (a browser with a few tabs, a terminal, the file manager)? The first is mostly Omarchy's daemons; the second is mostly Chromium.
-2. Should the lite profile be the default on Chromebooks only, or an opt-in for every Omarchy machine (and a candidate to go upstream as an edition)?
-3. Which of the shell's plugins does a Chromebook session need? The dock, the agents panel, the clipboard history, the emoji picker and the image picker are the candidates to disable.
-4. Input methods: is compose (Shift+CapsLock) enough by default, with Chinese, Japanese and Korean input installed on demand?
-5. Is a measurable visual difference acceptable to save memory (Hyprland blur off, fewer animations), or must the desktop look identical to upstream's?
+| Change | Candidate | Through | Upstream file edited |
+| --- | --- | --- | --- |
+| The dock and the agents widget off | 1 | `omarchy plugin disable` (or `shell.json`, as the shell's `setEnabled` writes it, when no shell is running) | none |
+| `MALLOC_ARENA_MAX=2` for the session | 1 | `/usr/lib/environment.d/60-omarchy-lite.conf` | none |
+| Hyprland animations off (blur and shadows are already off in Omarchy's defaults) | 2 | a marked block in `~/.config/hypr/looknfeel.lua` | none |
+| CJK input methods not installed | 3 | `share/subtract.packages`; `omarchy setup input <method>` installs one on demand, as it already does | none |
+| udiskie not installed | 5 | `share/subtract.packages` | none |
+| CUPS and avahi on their sockets | 6 | `systemctl disable <service>`, `enable <socket>`, once | none |
+| The crash watcher off | 7 | `omarchy-toggle crash-capture-off on` | none |
+| PCManFM instead of Nautilus (and Nautilus' localsearch indexer gone with it) | file manager | `share/subtract.packages` and `add.packages`; a marked block in `~/.config/hypr/bindings.lua`; `xdg-mime default pcmanfm.desktop inode/directory` | none |
+
+Two candidates are left for after the measurement: `QSG_RENDER_LOOP=basic` (it changes every Qt Quick app's rendering, so it has to earn its place in numbers), and the wallpaper decoded at the panel's size (an upstream change).
+
+Known costs, accepted: with udiskie gone, Omarchy's autostart line for it fails quietly at each login (one journal line), and removable media mount when PCManFM is asked to, not on insertion. Upstream candidates that would remove both: making udiskie a user unit that can be disabled, and an `omarchy-launch-file-manager` that honours the default file manager the way `omarchy-launch-browser` honours the default browser.
+
+## Requirements
+
+- **R5.1** `memory-report` runs unchanged on this port, omarchybook and LazyOS, and reports the budget's number. *Check:* the reports in Verification.
+- **R5.2** An idle Omarchy desktop on a 4 GB Chromebook, lite profile on, stays under 1024 MiB "used". *Check:* the protocol, median of three.
+- **R5.3** Every lite change goes through a setting, a package list or a user override file; no upstream file is edited for it. *Check:* the table above; `git diff --stat upstream/quattro` ([0007](0007-upstream-sync.md)).
+- **R5.4** Without a running shell, the lite profile changes `shell.json` exactly as the shell's own `setEnabled` does: a bar widget leaves the bar, a first-party service goes into `disabledPlugins[]`. *Check:* `book/packages/omarchy-lite/test/all`.
+- **R5.5** Each lite step runs once; a change the owner reverts (a deleted override block, a re-enabled plugin or service) is never reapplied. *Check:* the same test.
+- **R5.6** `build-image --profile lite` leaves `subtract.packages` out of the default set, adds `add.packages` and `omarchy-lite`, applies the system half after Omarchy's own setup, and warns when a subtracted name is no longer in the default set. *Check:* the build log.
+
+## Tasks
+
+- [x] `memory-report`
+- [x] `omarchy-lite`, applied by the Chromebook platform's setup operations, built into images
+- [ ] First measurement on the Hayato, lite profile on and off
+- [ ] The two measured candidates (`QSG_RENDER_LOOP`, the wallpaper's decode size)
+- [ ] Upstream pull requests: socket-activated CUPS, a user unit for udiskie, `omarchy-launch-file-manager`
 
 ## Verification
 
@@ -67,3 +94,4 @@ These change what gets built, so they are the maintainer's call:
 ## Changelog
 
 - 2026-10-22: created as a draft, with the protocol, the tool and the candidates.
+- 2026-10-22: accepted with the maintainer's decisions; the lite profile implemented.

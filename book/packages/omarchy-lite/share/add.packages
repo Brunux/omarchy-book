@@ -1,0 +1,5 @@
+# Packages the lite profile adds to Omarchy's default set, in place of what
+# subtract.packages leaves out.
+
+# The file manager: GTK 3, no indexer, no libadwaita.
+pcmanfm-gtk3

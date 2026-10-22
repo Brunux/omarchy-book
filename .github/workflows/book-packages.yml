@@ -33,6 +33,7 @@ jobs:
         run: |
           book/packages/omarchy-chromebook-boot/test/all
           book/packages/omarchy-chromebook/test/all
+          book/packages/omarchy-lite/test/all
       - name: Board profiles and kernels
         run: book/tools/check-devices
       - name: Upstream tests the platform registration lives in

@@ -1,0 +1,23 @@
+# Packages the lite profile leaves out of Omarchy's default set
+# (book/specs/0005-memory-budget.md). The image builder skips them; on a
+# machine that has them, `omarchy-lite enable --remove-packages` removes them.
+
+# Nautilus, its extensions and previewer. It brings GTK 4, libadwaita and the
+# localsearch indexer, whose XDG autostart crawls $HOME at every login.
+# PCManFM (add.packages) is the file manager instead.
+nautilus
+nautilus-python
+sushi
+
+# Chinese, Japanese and Korean input methods. fcitx5 itself stays, for
+# Omarchy's compose sequences; `omarchy setup input <method>` installs any of
+# these on demand, as it does today.
+fcitx5-chewing
+fcitx5-chinese-addons
+fcitx5-hangul
+fcitx5-mozc
+fcitx5-table-extra
+
+# The resident automounter. PCManFM mounts removable media through gvfs and
+# udisks when it is asked to.
+udiskie

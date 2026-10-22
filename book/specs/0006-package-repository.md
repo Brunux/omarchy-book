@@ -36,7 +36,7 @@ One pacman repository, `[omarchy-chromebook]`, published as the assets of a GitH
 
 ## Setting it up (maintainer, once)
 
-1. Make a signing key for the repository: `gpg --quick-gen-key "Omarchy Book <you@example.com>" ed25519 sign never`.
+1. Make a signing key for the repository, without a passphrase (CI signs unattended): `gpg --batch --passphrase '' --quick-gen-key "Omarchy Book CI <you@example.com>" ed25519 sign never`.
 2. Add its armored private key as the repository secret `BOOK_SIGNING_KEY` (Settings → Secrets and variables → Actions).
 3. Commit its public half as `book/keys/omarchy-book.gpg`, so the image builder trusts it.
 4. Run the workflow from the Actions tab with **build** and **publish** checked.

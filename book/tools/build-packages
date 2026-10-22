@@ -45,6 +45,9 @@ done
 
 mkdir -p "$out" "$out/build" "$out/sources"
 export PKGDEST=$out BUILDDIR=$out/build SRCDEST=$out/sources
+# Arch Linux ARM's makepkg.conf still defaults to .pkg.tar.xz; build what
+# Omarchy and Arch publish, and what repo-add below picks up.
+export PKGEXT=.pkg.tar.zst
 sign_flags=()
 [[ -z $sign ]] || sign_flags=(--sign --key "$sign")
 

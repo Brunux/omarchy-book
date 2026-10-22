@@ -6,8 +6,8 @@ What happens next, everything still open, and what is known not to work yet. Eac
 
 | # | Step | Who | Unblocks | Spec |
 | --- | --- | --- | --- | --- |
-| 1 | Review and merge the `chromebook-platform` branch into `quattro` | maintainer | the workflow can be run by hand | [0007](../specs/0007-upstream-sync.md) |
-| 2 | Create the repository's signing key: the `BOOK_SIGNING_KEY` secret and `book/keys/omarchy-book.gpg` | maintainer | signed packages | [building](building.md#on-github-the-normal-way) |
+| 1 | ~~Merge the `chromebook-platform` branch into `quattro`~~ Done 2026-10-22 (fast-forward) | maintainer | the workflow can be run by hand | [0007](../specs/0007-upstream-sync.md) |
+| 2 | Create the repository's signing key: `book/keys/omarchy-book.gpg` committed 2026-10-22; the `BOOK_SIGNING_KEY` secret is to be checked in the repository settings | maintainer | signed packages | [building](building.md#on-github-the-normal-way) |
 | 3 | Run the **Book packages** workflow with build and publish | maintainer | the packages exist; images can be built | [0006](../specs/0006-package-repository.md) |
 | 4 | Build an image on Arch Linux ARM: `sudo book/tools/build-image --device google-asurada` | maintainer | a card to boot | [0004](../specs/0004-image-and-install.md) |
 | 5 | Boot it on the Hayato and work through the acceptance checks, one risky change per boot | maintainer | Verified specs | [0003](../specs/0003-boot-package.md#acceptance), [0004](../specs/0004-image-and-install.md#acceptance) |

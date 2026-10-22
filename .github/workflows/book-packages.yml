@@ -72,6 +72,13 @@ jobs:
           if [ -n "$BOOK_SIGNING_KEY" ]; then
             printf '%s\n' "$BOOK_SIGNING_KEY" | sudo -u builder gpg --batch --import
             sudo -u builder gpg --list-secret-keys --with-colons | awk -F: '$1 == "fpr" { print $10; exit }' >/tmp/signing-key
+            # makepkg and repo-add call gpg themselves, with nobody to type a
+            # passphrase, so the key must have none. Fail here, in seconds,
+            # rather than after the first package builds.
+            if ! echo test | sudo -u builder gpg --batch --pinentry-mode error --local-user "$(cat /tmp/signing-key)" --detach-sign -o /dev/null; then
+              echo "::error::BOOK_SIGNING_KEY cannot sign unattended. Use a signing key without a passphrase (book/docs/building.md)."
+              exit 1
+            fi
           fi
       - name: Build
         run: |

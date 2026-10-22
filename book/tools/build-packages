@@ -1,0 +1,88 @@
+#!/bin/bash
+
+# Build the Chromebook package repository (book/specs/0006-package-repository.md).
+#
+#   book/tools/build-packages [--out DIR] [--sign KEYID] [--skip-kernels]
+#
+# Run as an unprivileged user with sudo on Arch Linux ARM (makepkg installs
+# build dependencies through sudo). Builds, in dependency order:
+#
+#   depthcharge-tools          book/recipes/
+#   omarchy-chromebook-boot    book/packages/
+#   omarchy-chromebook         book/packages/
+#   linux-book-<flavor>        book/kernels/, one per flavor
+#   omarchy-dev, omarchy-settings-dev
+#                              omacom/omarchy-pkgs' own recipes, built from
+#                              this checkout (OMARCHY_SRC), versioned as
+#                              upstream versions them: 4.0.0.r<commits>.g<hash>
+#
+# and writes DIR/omarchy-chromebook.db with every package in it, signed with
+# KEYID when one is given. The repository tree is not written to: makepkg's
+# work happens under DIR/build.
+
+set -euo pipefail
+
+repo_root=$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/../.." && pwd)
+book=$repo_root/book
+# omacom/omarchy-pkgs commit whose omarchy-dev and omarchy-settings-dev
+# recipes build the runtime. Moved forward with each upstream sync (0007).
+omarchy_pkgs_ref=de5c031f87bd82035b8061a5775b95e0e87aeafd
+
+out=$PWD/repo
+sign=""
+skip_kernels=0
+while (( $# )); do
+  case $1 in
+    --out) out=$(readlink -f -- "${2:?}"); shift 2 ;;
+    --sign) sign=${2:?}; shift 2 ;;
+    --skip-kernels) skip_kernels=1; shift ;;
+    *) sed -n '5p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+  esac
+done
+(( EUID != 0 )) || { echo "Error: makepkg refuses root; run as a user with sudo" >&2; exit 1; }
+[[ $(uname -m) == "aarch64" ]] || { echo "Error: build on aarch64 (Arch Linux ARM)" >&2; exit 1; }
+
+mkdir -p "$out" "$out/build" "$out/sources"
+export PKGDEST=$out BUILDDIR=$out/build SRCDEST=$out/sources
+sign_flags=()
+[[ -z $sign ]] || sign_flags=(--sign --key "$sign")
+
+# makepkg [dir] [args...]: build the recipe in dir, installing what it needs.
+build() {
+  local dir=$1
+  shift
+  echo "==> $(basename "$dir")"
+  (cd "$dir" && makepkg --syncdeps --noconfirm --needed --cleanbuild "${sign_flags[@]}" "$@")
+}
+
+build "$book/recipes/depthcharge-tools"
+# The platform packages' runtime dependencies (depthcharge-tools among them)
+# need not be installed to build or test them.
+build "$book/packages/omarchy-chromebook-boot" --nodeps
+build "$book/packages/omarchy-chromebook" --nodeps
+if (( ! skip_kernels )); then
+  for kernel in "$book"/kernels/*/; do
+    build "$kernel"
+  done
+fi
+
+# The runtime, from this checkout, with upstream's recipes.
+recipes=$out/omarchy-pkgs
+rm -rf "$recipes"
+git clone --quiet --filter=blob:none https://github.com/omacom/omarchy-pkgs.git "$recipes"
+git -C "$recipes" checkout --quiet "$omarchy_pkgs_ref"
+count=$(git -C "$repo_root" rev-list --count HEAD)
+short=$(git -C "$repo_root" rev-parse --short HEAD)
+version=$(sed 's/\.alpha$//' "$repo_root/version").r$count.g$short
+for recipe in omarchy-dev omarchy-settings-dev; do
+  sed -i -e "s/^pkgver=.*/pkgver=$version/" -e "s/^pkgrel=.*/pkgrel=1/" \
+    -e "s/^_commit=.*/_commit=$(git -C "$repo_root" rev-parse HEAD)/" "$recipes/pkgbuilds/$recipe/PKGBUILD"
+  OMARCHY_SRC=$repo_root build "$recipes/pkgbuilds/$recipe" --nodeps --skipchecksums
+done
+
+echo "==> omarchy-chromebook.db"
+repo_flags=()
+[[ -z $sign ]] || repo_flags=(--sign --key "$sign")
+rm -f "$out"/omarchy-chromebook.{db,files}*
+repo-add "${repo_flags[@]}" "$out/omarchy-chromebook.db.tar.gz" "$out"/*.pkg.tar.zst
+ls -la "$out"

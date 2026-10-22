@@ -1,0 +1,204 @@
+#!/bin/bash
+
+# Build a flashable card image of Omarchy for a Chromebook board
+# (book/specs/0004-image-and-install.md).
+#
+#   sudo book/tools/build-image --device google-asurada [--output DIR] [--size 8G]
+#                               [--repo DIR] [--keep-mounted]
+#
+# The image is Omarchy installed the way the ISO installs it, into the
+# Chromebook layout instead of an ESP: the default package set for
+# aarch64-chromebook, then `omarchy-apply-system --defer-provisioning
+# --first-install` in the image with the image manifest naming the platform. So
+# the Chromebook's first boot runs hardware setup on the real board and then
+# Omarchy's owner wizard, exactly as an upstream prebuilt image does, and the
+# card can later move itself to the eMMC (omarchy-chromebook-boot
+# install-internal).
+#
+# Run it as root on Arch Linux ARM (an aarch64 machine or container, with loop
+# devices): it needs pacman, arch-install-scripts, btrfs-progs, parted,
+# vboot-utils, util-linux and xz. --repo points at a local directory holding
+# the Chromebook repository (omarchy-chromebook.db and its packages) instead of
+# the published one, for testing packages before they are released.
+
+set -euo pipefail
+shopt -s inherit_errexit
+
+repo_root=$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/../.." && pwd)
+book=$repo_root/book
+boot_lib=$book/packages/omarchy-chromebook-boot/lib
+for module in common device layout; do
+  # shellcheck disable=SC1090
+  source "$boot_lib/$module.sh"
+done
+
+usage() {
+  sed -n '6,8p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+  exit 2
+}
+
+device=""
+output=$PWD
+size=8G
+local_repo=""
+keep_mounted=0
+while (( $# )); do
+  case $1 in
+    --device) device=${2:?}; shift 2 ;;
+    --output) output=${2:?}; shift 2 ;;
+    --size) size=${2:?}; shift 2 ;;
+    --repo) local_repo=$(readlink -f -- "${2:?}"); shift 2 ;;
+    --keep-mounted) keep_mounted=1; shift ;;
+    *) usage ;;
+  esac
+done
+[[ -n $device ]] || usage
+(( EUID == 0 )) || cb_fail "build-image needs root (loop devices, mounts, pacstrap)"
+[[ $(uname -m) == "aarch64" ]] || cb_fail "build-image runs on aarch64 (an Arch Linux ARM machine or container)"
+for tool in pacstrap arch-chroot pacman-conf losetup mkfs.btrfs parted cgpt xz; do
+  command -v "$tool" >/dev/null || cb_fail "build-image needs $tool on this machine"
+done
+
+# The board, from the repository's profiles (the image gets the packaged ones).
+cb_init /
+cb_devices=$book/devices
+cb_device=$device
+cb_profile=$cb_devices/$device
+[[ -d $cb_profile ]] || cb_fail "no profile for $device in $cb_devices"
+cb_deviceinfo_read "$cb_profile/deviceinfo"
+cb_device_require_depthcharge
+flavor=$(cb_profile_lines "$cb_profile/kernel" | head -n1)
+kernel=linux-book-$flavor
+
+stamp=$(date -u +%Y%m%d)
+image=$output/omarchy-$device-$stamp.img
+work=$(mktemp -d /var/tmp/omarchy-image.XXXXXX)
+mnt=$work/mnt
+loop=""
+
+cleanup() {
+  if (( keep_mounted )); then
+    echo "Left mounted at $mnt on $loop (--keep-mounted)." >&2
+    return
+  fi
+  for target in "$mnt/dev" "$mnt/proc" "$mnt/sys" "$mnt/run"; do
+    mountpoint -q "$target" && umount -R "$target" 2>/dev/null
+  done
+  cb_layout_umount "$mnt"
+  [[ -z $loop ]] || losetup -d "$loop" 2>/dev/null || true
+  rm -rf "$work"
+}
+trap cleanup EXIT
+
+# ── pacman ───────────────────────────────────────────────────────────────────
+
+# The platform's own edge template, with its mirrorlist inlined, so pacstrap
+# installs exactly what the machine will update from.
+templates=$repo_root/default/pacman/aarch64-chromebook
+sed "s|Include = /etc/pacman.d/mirrorlist|Include = $templates/mirrorlist-edge|" \
+  "$templates/pacman-edge.conf" >"$work/pacman.conf"
+if [[ -n $local_repo ]]; then
+  [[ -f $local_repo/omarchy-chromebook.db ]] || cb_fail "no omarchy-chromebook.db in $local_repo"
+  # A local build is not signed yet; trust it for this build only.
+  sed -i "/^\[omarchy-chromebook\]/,/^\[/ s|^Server = .*|SigLevel = Optional TrustAll\nServer = file://$local_repo|" "$work/pacman.conf"
+fi
+pacman-conf --config "$work/pacman.conf" --repo-list >/dev/null || cb_fail "the pacman configuration does not parse"
+
+pacman-key --init >/dev/null 2>&1 || true
+for key in "$book"/keys/*.gpg; do
+  [[ -f $key ]] || continue
+  pacman-key --add "$key" >/dev/null
+  while read -r fingerprint; do
+    pacman-key --lsign-key "$fingerprint" >/dev/null
+  done < <(gpg --show-keys --with-colons "$key" 2>/dev/null | awk -F: '$1 == "fpr" { print $10; exit }')
+done
+
+# The packages the ISO pacstraps, for this platform: archinstall's base (less
+# what only x86 or Limine needs), the runtime, the board's kernel and firmware,
+# and Omarchy's default set for aarch64-chromebook with Arch Linux ARM's names
+# (the renames omacom/omarchy-iso's builder/aarch64-package-filter.sh makes).
+packages=(base base-devel openssh pipewire snapper tailscale omarchy-keyring omarchy-dev omarchy-settings-dev "$kernel")
+mapfile -t -O "${#packages[@]}" packages < <(cb_profile_lines "$cb_profile/packages")
+while IFS= read -r package; do
+  case $package in
+    nvim) packages+=(neovim) ;;
+    vi) packages+=(ex-vi-compat) ;;
+    *) packages+=("$package") ;;
+  esac
+done < <(OMARCHY_PATH=$repo_root "$repo_root/bin/omarchy-pkg-defaults" aarch64-chromebook)
+
+# ── the disk ─────────────────────────────────────────────────────────────────
+
+mkdir -p "$output"
+rm -f "$image"
+truncate -s "$size" "$image"
+loop=$(losetup -fP --show "$image")
+echo "Building $image for $device on $loop"
+
+cb_layout_create "$loop"
+root_partition=$(cb_layout_partition "$loop" 3)
+cb_layout_partition "$loop" 1 >/dev/null
+cb_layout_partition "$loop" 2 >/dev/null
+cb_layout_format_mount "$root_partition" "$mnt"
+
+# ── the system ───────────────────────────────────────────────────────────────
+
+# What the image is for, before anything in it asks: the board for
+# omarchy-chromebook-boot, the manifest for Omarchy's image mode (root-owned,
+# as omarchy-hw-platform and install/helpers/image-target.sh require).
+install -d -m 755 "$mnt/etc/omarchy-chromebook" "$mnt/var/lib/omarchy/image"
+echo "$device" >"$mnt/etc/omarchy-chromebook/device"
+printf 'format=1\nplatform=aarch64-chromebook\nbuilder=omarchy-book\n' >"$mnt/var/lib/omarchy/image/target"
+chmod 644 "$mnt/var/lib/omarchy/image/target"
+
+pacstrap -C "$work/pacman.conf" -G -M "$mnt" "${packages[@]}"
+# The machine updates from the published template, never from --repo.
+install -m 644 "$templates/pacman-edge.conf" "$mnt/etc/pacman.conf"
+install -m 644 "$templates/mirrorlist-edge" "$mnt/etc/pacman.d/mirrorlist"
+cb_layout_fstab "$cb_root_uuid" >"$mnt/etc/fstab"
+
+# Omarchy's own system setup, as the ISO runs it for an install whose owner is
+# created on first boot, with the environment the ISO gives it (omacom/
+# omarchy-iso, _run_target_setup_command). Hardware setup queues itself for
+# that boot.
+setup_env=(
+  OMARCHY_PATH=/usr/share/omarchy
+  OMARCHY_INSTALL=/usr/share/omarchy/install
+  OMARCHY_MIRROR=edge
+  OMARCHY_RUNTIME_PACKAGE=omarchy-dev
+  OMARCHY_SETTINGS_PACKAGE=omarchy-settings-dev
+  OMARCHY_NVIM_PACKAGE=omarchy-nvim
+  OMARCHY_START_TIME="$(date '+%Y-%m-%d %H:%M:%S')"
+  OMARCHY_START_EPOCH="$(date +%s)"
+  OMARCHY_INSTALL_LOG_FILE=/var/log/omarchy-install.log
+  OMARCHY_LOG_TO_STDOUT=1
+)
+arch-chroot "$mnt" env --unset=XDG_RUNTIME_DIR "${setup_env[@]}" /usr/bin/omarchy-apply-system --defer-provisioning --first-install
+
+# The initramfs with the board's modules, then both kernel partitions.
+arch-chroot "$mnt" omarchy-chromebook-boot initramfs-config --device "$device" >/dev/null
+arch-chroot "$mnt" mkinitcpio -p "$kernel"
+arch-chroot "$mnt" omarchy-chromebook-boot write-disk --disk "$loop" --device "$device"
+arch-chroot "$mnt" systemctl enable omarchy-chromebook-bless.service
+
+# ── sealing ──────────────────────────────────────────────────────────────────
+
+# Every card flashed from this image is its own machine. Empty, not
+# "uninitialized": that string marks a first boot, which applies unit presets,
+# and on Arch those disable everything not listed (omacom/omarchy-iso,
+# test/vm-image/vm-seal). Host keys come back from sshdgenkeys.service.
+: >"$mnt/etc/machine-id"
+rm -f "$mnt/var/lib/dbus/machine-id" "$mnt"/etc/ssh/ssh_host_*
+rm -rf "$mnt"/var/cache/pacman/pkg/* "$mnt"/var/log/journal/*
+
+if (( keep_mounted )); then
+  exit 0
+fi
+cleanup
+trap - EXIT
+
+echo "Compressing"
+xz -T0 -f "$image"
+sha256sum "$image.xz" >"$image.xz.sha256"
+echo "Done: $image.xz"
+echo "Flash it: xz -dc ${image##*/}.xz | sudo dd of=/dev/<card> bs=4M conv=fsync"

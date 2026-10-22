@@ -1,18 +1,26 @@
 #!/bin/bash -p
 
-# omarchy:summary=Print the hardware platform: x86, aarch64, aarch64-apple, aarch64-qualcomm, aarch64-n1x or aarch64-gb10.
+# omarchy:summary=Print the hardware platform: x86, aarch64, aarch64-apple, aarch64-qualcomm, aarch64-n1x, aarch64-gb10 or aarch64-chromebook.
 
 # Platform names are the CPU architecture, then the hardware family when it
 # needs handling of its own: x86, aarch64 (every ARM machine without one),
 # aarch64-apple (Apple Silicon), aarch64-qualcomm (Snapdragon), aarch64-n1x
-# (NVIDIA N1x) and aarch64-gb10 (NVIDIA GB10 desktops). A later family is
-# aarch64-<family>, so "aarch64*" always means ARM (AGENTS.md, Platforms).
+# (NVIDIA N1x), aarch64-gb10 (NVIDIA GB10 desktops) and aarch64-chromebook
+# (ARM Chromebooks). A later family is aarch64-<family>, so "aarch64*" always
+# means ARM (AGENTS.md, Platforms).
 #
 # Device-tree ARM laptops have no DMI, so the board identity is the root node of
 # the device tree the firmware hands the kernel: "apple,<model>" from Asahi's
 # m1n1 on every Apple Silicon Mac, "qcom,<soc>" on Snapdragon laptops, which
 # must never pass for a Mac. Each compatible string is a NUL-separated list, and
 # only a token's vendor prefix counts.
+#
+# A Chromebook's board is "google,<board>" (mainline's ChromeOS device trees
+# name every board that way, beside the SoC: "google,hayato",
+# "mediatek,mt8192"), and its firmware is depthcharge, which loads a signed
+# kernel partition instead of a UEFI bootloader. That boot chain is what makes
+# it a family, so a Snapdragon Chromebook ("google,lazor", "qcom,sc7180") is a
+# Chromebook, never a Snapdragon laptop that boots Limine.
 #
 # The NVIDIA N1x laptops boot with ACPI and no device tree. They are the ARM
 # machines whose CPU-side I2C controllers are ACPI NVDA0200 (MediaTek MT8901 IP)
@@ -147,7 +155,7 @@ image_platform() {
     generic) platform=x86 ;;
     qualcomm) platform=aarch64-qualcomm ;;
   esac
-  if [[ ! $platform =~ ^(x86|aarch64|aarch64-apple|aarch64-qualcomm|aarch64-n1x|aarch64-gb10)$ ]]; then
+  if [[ ! $platform =~ ^(x86|aarch64|aarch64-apple|aarch64-qualcomm|aarch64-n1x|aarch64-gb10|aarch64-chromebook)$ ]]; then
     echo "Error: the image manifest $manifest names no known platform: ${platform:-none}" >&2
     return 1
   fi
@@ -173,16 +181,23 @@ for source in "${sources[@]}"; do
 
   apple=0
   qcom=0
+  google=0
   mapfile -d '' -t tokens <"$source"
   for token in "${tokens[@]}"; do
     [[ $token == "apple,"* ]] && apple=1
     [[ $token == "qcom,"* ]] && qcom=1
+    [[ $token == "google,"* ]] && google=1
   done
 
+  # A Chromebook's SoC may be Qualcomm's: its board is Google's either way.
   if (( apple && qcom )); then
     contradiction "$source names both Apple and Qualcomm hardware"
+  elif (( apple && google )); then
+    contradiction "$source names both Apple and Google hardware"
   elif (( apple )); then
     found=apple
+  elif (( google )); then
+    found=google
   elif (( qcom )); then
     found=qcom
   else
@@ -228,7 +243,7 @@ if [[ -n $n1x_source && -n $gb10_source ]]; then
 fi
 
 if [[ -n $n1x_source ]]; then
-  [[ $vendor != apple && $vendor != qcom ]] ||
+  [[ $vendor != apple && $vendor != qcom && $vendor != google ]] ||
     contradiction "$vendor_source names $vendor hardware but $n1x_source is an NVIDIA N1x"
   [[ $machine == "aarch64" ]] || contradiction "$n1x_source is an NVIDIA N1x but the CPU is $machine"
   echo aarch64-n1x
@@ -236,7 +251,7 @@ if [[ -n $n1x_source ]]; then
 fi
 
 if [[ -n $gb10_source ]]; then
-  [[ $vendor != apple && $vendor != qcom ]] ||
+  [[ $vendor != apple && $vendor != qcom && $vendor != google ]] ||
     contradiction "$vendor_source names $vendor hardware but $gb10_source is an NVIDIA GB10"
   [[ $machine == "aarch64" ]] || contradiction "$gb10_source is an NVIDIA GB10 but the CPU is $machine"
   echo aarch64-gb10
@@ -244,13 +259,13 @@ if [[ -n $gb10_source ]]; then
 fi
 
 case $vendor in
-  apple | qcom)
+  apple | qcom | google)
     [[ $machine == "aarch64" ]] || contradiction "$vendor_source names $vendor hardware but the CPU is $machine"
-    if [[ $vendor == "apple" ]]; then
-      echo aarch64-apple
-    else
-      echo aarch64-qualcomm
-    fi
+    case $vendor in
+      apple) echo aarch64-apple ;;
+      qcom) echo aarch64-qualcomm ;;
+      google) echo aarch64-chromebook ;;
+    esac
     ;;
   *)
     if [[ $machine == "aarch64" ]]; then

@@ -8,7 +8,7 @@
 omarchy_pacman_templates() {
   case ${1:-} in
     x86) echo "$OMARCHY_PATH/default/pacman" ;;
-    aarch64 | aarch64-apple) echo "$OMARCHY_PATH/default/pacman/$1" ;;
+    aarch64 | aarch64-apple | aarch64-chromebook) echo "$OMARCHY_PATH/default/pacman/$1" ;;
     # Snapdragon, the N1x and the GB10 use Arch Linux ARM and Omarchy's aarch64
     # repository like any other ARM machine, so they share its templates.
     aarch64-qualcomm | aarch64-n1x | aarch64-gb10) echo "$OMARCHY_PATH/default/pacman/aarch64" ;;
@@ -20,12 +20,12 @@ omarchy_pacman_templates() {
 }
 
 # The channel a machine takes when none is named: stable, except on Apple
-# Silicon, which has edge templates only: its Omarchy packages and Asahi ALARM
-# are published for edge alone so far.
+# Silicon and Chromebooks, which have edge templates only: their platform
+# packages (and Asahi ALARM) are published for edge alone so far.
 omarchy_pacman_default_channel() {
   case ${1:-} in
     x86 | aarch64 | aarch64-qualcomm | aarch64-n1x | aarch64-gb10) echo stable ;;
-    aarch64-apple) echo edge ;;
+    aarch64-apple | aarch64-chromebook) echo edge ;;
     *)
       echo "Error: Unknown platform '${1:-}'." >&2
       return 1

@@ -1,0 +1,12 @@
+# Chromebook additions, composed after omarchy-base.packages and
+# omarchy-aarch64.packages (omarchy-pkg-defaults aarch64-chromebook): what
+# every ARM Chromebook runs. The kernel comes with the Chromebook's image, as
+# the kernel and bootloader do from the ISO on x86_64: each board's kernel is
+# named by its device profile (book/devices/<codename>/kernel). What a
+# Chromebook cannot boot or type without (the depthcharge tools, the ChromeOS
+# keyboard map, the board's audio routing) comes as the platform packages'
+# dependencies, so a new board needs no change here.
+
+# The Chromebook's runtime and boot packages (book/packages).
+omarchy-chromebook
+omarchy-chromebook-boot

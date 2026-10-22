@@ -315,11 +315,54 @@ fi
 chmod o-w "$with_mac/$setup_implementation/setup-user"
 pass "apple: a setup entrypoint that fails the trust rules never runs"
 
+# ── Chromebooks ──────────────────────────────────────────────────────────────
+
+# A Chromebook's boot operations resolve in omarchy-chromebook-boot's directory
+# and its setup in omarchy-chromebook's, never in a Mac package's. Without the
+# boot package, the operations no generic path can do on depthcharge (boot
+# setup, update verification, factory reset) fail naming it; provisioning,
+# luks-slots and update-takeover stay no-ops on its unencrypted installs.
+fake_platform "$tmp/aarch64-chromebook" aarch64-chromebook
+chromebook_optional=(provision-prepare provision-commit provision-verify update-takeover luks-slots)
+chromebook=$tmp/chromebook
+implementation=usr/lib/omarchy/chromebook-boot install_implementation "$chromebook"
+install_setup "$chromebook" usr/lib/omarchy/chromebook
+
+for operation in "${operations[@]}"; do
+  rm -f "$tmp/ran"
+  on aarch64-chromebook "$chromebook" "$operation" first || fail "chromebook: $operation runs its entrypoint"
+  [[ $(cat "$tmp/ran") == "$operation first" ]] || fail "chromebook: $operation passes its arguments" "$(cat "$tmp/ran")"
+  resolved=$(on aarch64-chromebook "$chromebook" --resolve "$operation") &&
+    [[ $resolved == "$chromebook/usr/lib/omarchy/chromebook-boot/$operation" ]] ||
+    fail "chromebook: $operation resolves to omarchy-chromebook-boot's entrypoint" "$resolved"
+
+  # $full holds only the Mac's boot package.
+  rm -f "$tmp/ran"
+  status=0
+  output=$(on aarch64-chromebook "$full" "$operation" 2>&1) || status=$?
+  [[ ! -e $tmp/ran ]] || fail "chromebook: a Mac's $operation never runs"
+  if [[ " ${chromebook_optional[*]} " == *" $operation "* ]]; then
+    (( status == 0 )) && [[ -z $output ]] || fail "chromebook: optional $operation is a no-op without the boot package" "$output"
+  else
+    (( status == 3 )) && [[ $output == "Error: $operation on aarch64-chromebook needs omarchy-chromebook-boot, which provides /usr/lib/omarchy/chromebook-boot/$operation; it is not installed" ]] ||
+      fail "chromebook: required $operation names the missing package" "status $status: $output"
+  fi
+done
+for operation in "${setup_operations[@]}"; do
+  resolved=$(on aarch64-chromebook "$chromebook" --resolve "$operation") &&
+    [[ $resolved == "$chromebook/usr/lib/omarchy/chromebook/$operation" ]] ||
+    fail "chromebook: $operation resolves to omarchy-chromebook's entrypoint" "$resolved"
+  rm -f "$tmp/ran"
+  output=$(on aarch64-chromebook "$with_mac" "$operation" 2>&1) && [[ -z $output && ! -e $tmp/ran ]] ||
+    fail "chromebook: $operation is a no-op without omarchy-chromebook, and never runs the Mac's" "$output"
+done
+pass "chromebook: boot operations resolve in omarchy-chromebook-boot, setup in omarchy-chromebook, and only depthcharge's own work is required"
+
 # Root is refused a user operation only where the platform registers it, so an
 # installer run with sudo still finishes elsewhere. As root the dispatcher runs
 # the detector beside it, so each platform gets a copy beside a stub.
 if unshare --user --map-root-user true 2>/dev/null; then
-  for platform in aarch64-apple x86 aarch64; do
+  for platform in aarch64-apple aarch64-chromebook x86 aarch64; do
     mkdir -p "$tmp/root-$platform"
     cp "$dispatch" "$tmp/root-$platform/"
     printf '#!/bin/bash\necho %s\n' "$platform" >"$tmp/root-$platform/omarchy-hw-platform"
@@ -331,16 +374,16 @@ if unshare --user --map-root-user true 2>/dev/null; then
         output=$(OMARCHY_LIFECYCLE_ROOT="$with_mac" unshare --user --map-root-user \
           "$tmp/root-$platform/omarchy-lifecycle-dispatch" $arguments 2>&1) || status=$?
         [[ ! -e $tmp/ran ]] || fail "$platform: root never runs '$arguments'"
-        if [[ $platform == "aarch64-apple" ]]; then
+        if [[ $platform == "aarch64-apple" || $platform == "aarch64-chromebook" ]]; then
           (( status == 1 )) && [[ $output == "Error: $operation runs as the user, never as root" ]] ||
-            fail "apple: root is refused '$arguments'" "status $status: $output"
+            fail "$platform: root is refused '$arguments'" "status $status: $output"
         else
           (( status == 0 )) && [[ -z $output ]] || fail "$platform: '$arguments' is a no-op for root" "status $status: $output"
         fi
       done
     done
   done
-  pass "setup-user, post-install and pre-remove refuse root on Apple Silicon, and are no-ops for root elsewhere"
+  pass "setup-user, post-install and pre-remove refuse root on Apple Silicon and Chromebooks, and are no-ops for root elsewhere"
 else
   skip "no unprivileged user namespace; skipping the root refusal of the user operations"
 fi

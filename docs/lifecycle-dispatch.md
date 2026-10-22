@@ -55,6 +55,8 @@ Registration is code in `bin/omarchy-lifecycle-dispatch`, not configuration. No 
 | --- | --- | --- | --- |
 | `aarch64-apple` | `/usr/lib/omarchy/mac-boot` | `omarchy-mac-boot` | all its operations |
 | `aarch64-apple`: `setup-system`, `setup-user`, `post-install`, `pre-remove` | `/usr/lib/omarchy/mac` | `omarchy-mac` | none |
+| `aarch64-chromebook` | `/usr/lib/omarchy/chromebook-boot` | `omarchy-chromebook-boot` | `setup-boot`, `update-verify`, `reset-prepare`, `reset-verify`, `reset-commit`, `reset-rollback` |
+| `aarch64-chromebook`: `setup-system`, `setup-user`, `post-install`, `pre-remove` | `/usr/lib/omarchy/chromebook` | `omarchy-chromebook` | none |
 | `x86`, `aarch64`, `aarch64-qualcomm`, `aarch64-n1x`, `aarch64-gb10` | none | none | none: every operation is a no-op, and callers keep their generic path |
 
 The entrypoint for an operation is `<implementation directory>/<operation>`. A registered platform's required operations must be shipped. Its optional operations may be left out, and then they are no-ops.
@@ -136,13 +138,24 @@ A platform's runtime package describes its hardware in files under the platform 
 
 `omarchy-mac-boot`, from omacom/omarchy-mac-pkgs, implements the Apple boot operations as small entrypoints around its boot modules and installs them in `/usr/lib/omarchy/mac-boot`. `omarchy-mac`, from the same repository, implements `setup-system`, `setup-user`, `post-install` and `pre-remove` in `/usr/lib/omarchy/mac`. Their documentation describes each one. Nothing Apple-specific lives in Omarchy beyond the registration above.
 
+## Chromebooks
+
+ARM Chromebooks are `aarch64-chromebook`. Their firmware, depthcharge, loads a signed FIT image from a ChromeOS kernel partition named by the GPT, so there is no ESP, no Limine and no UKI: a kernel or initramfs that changes only `/boot` changes nothing at the next boot until the kernel partition is rewritten. `omarchy-chromebook-boot` (from this repository's `book/packages/`) owns that partition:
+
+- `setup-boot` is required because hardware setup has no other way to write it; with `image-first-boot` it asks for the boot rebuild, which then writes the partition the machine booted from.
+- `update-verify` is required because nothing else checks that the kernel partition carries the installed kernel, initramfs and command line.
+- The four reset operations are required because the generic reset rebuilds Limine UKIs the machine does not boot. A boot package that does not ship them yet stops the reset before anything changes, naming itself.
+- Provisioning, `luks-slots` and `update-takeover` are optional: Chromebook installs are unencrypted, so owner setup has no staged unlock to drop, and the boot chain writes a partition rather than files a package could conflict with. Moving them to required comes with the first Chromebook boot package that owns an unlock.
+
+`omarchy-chromebook` implements the optional `setup-system`, `setup-user`, `post-install` and `pre-remove` in `/usr/lib/omarchy/chromebook`. Nothing Chromebook-specific lives in Omarchy beyond the registration above; the board-by-board knowledge (device profiles, kernels) lives in the packages.
+
 ## Snapdragon
 
 Snapdragon laptops are `aarch64-qualcomm`, which registers no package: they boot Limine with unified kernel images, like x86, every operation is a no-op there, and provisioning uses the Limine UKI callbacks, so Dragon behaves exactly as before.
 
 ## Tests
 
-- `test/shell.d/lifecycle-dispatch-test.sh` covers the dispatcher on every platform fixture:
+- `test/shell.d/lifecycle-dispatch-test.sh` covers the dispatcher on every platform fixture, Chromebooks' own registration (boot operations in `omarchy-chromebook-boot`, setup in `omarchy-chromebook`, no Mac entrypoint ever running there) included:
   - the setup and app-install operations: no-ops off Apple, `omarchy-mac`'s directory on Apple (never `omarchy-mac-boot`'s), no-ops without `omarchy-mac`, the user operations refused as root and given only their allowlisted environment
   - no-ops on x86 and plain aarch64, even with Mac entrypoints on disk
   - Apple with and without the boot package, and with one too old to ship an operation

@@ -21,7 +21,7 @@ if (( EUID != 0 )); then
 fi
 if (( EUID == 0 )) || unshare --user --map-root-user true 2>/dev/null; then
   live=$("${root_runner[@]}" "$detector") || fail "root detects the live platform"
-  [[ $live =~ ^(aarch64-apple|aarch64-qualcomm|aarch64-n1x|aarch64-gb10|aarch64|x86)$ ]] || fail "root detects the live platform" "live: $live"
+  [[ $live =~ ^(aarch64-apple|aarch64-qualcomm|aarch64-n1x|aarch64-gb10|aarch64-chromebook|aarch64|x86)$ ]] || fail "root detects the live platform" "live: $live"
   for platform in aarch64-apple aarch64 x86; do
     fixture="$test_tmp/$platform"
     if [[ -f $fixture/proc/device-tree/compatible ]]; then
@@ -41,7 +41,7 @@ fi
 
 # -p in the shebang is what keeps exported functions and BASH_ENV out, so an
 # ordinary Bash launch with a decoy -p argument is refused before it reads anything.
-for command in omarchy-hw-platform omarchy-hw-aarch64-apple omarchy-hw-apple-silicon omarchy-hw-aarch64-qualcomm omarchy-hw-aarch64-n1x omarchy-hw-n1x omarchy-hw-aarch64-gb10; do
+for command in omarchy-hw-platform omarchy-hw-aarch64-apple omarchy-hw-apple-silicon omarchy-hw-aarch64-qualcomm omarchy-hw-aarch64-n1x omarchy-hw-n1x omarchy-hw-aarch64-gb10 omarchy-hw-aarch64-chromebook; do
   if /usr/bin/bash "$ROOT/bin/$command" -p >/dev/null 2>"$test_tmp/error"; then
     fail "$command refuses an ordinary Bash launch"
   fi
@@ -217,11 +217,28 @@ expect_contradiction gb10-qcom aarch64 "a GB10 with a Qualcomm device tree fails
 n1x_acpi gb10-n1x
 gb10_pci gb10-n1x
 expect_contradiction gb10-n1x aarch64 "a GB10 with the N1x's I2C controllers fails"
-for family in n1x qualcomm gb10; do
+# Chromebooks name a Google board beside the SoC, and boot depthcharge whatever
+# the SoC: the Hayato (MT8192), the Krane (MT8183) and the Lazor, a Snapdragon
+# Chromebook that must never pass for a Snapdragon laptop booting Limine.
+write_tree hayato proc google,hayato-rev1 google,hayato mediatek,mt8192
+write_tree krane proc google,krane-sku176 google,krane mediatek,mt8183
+write_tree lazor proc google,lazor-rev3 google,lazor qcom,sc7180
+for board in hayato krane lazor; do
+  expect "$board" aarch64 aarch64-chromebook "the $board device tree is a Chromebook"
+done
+write_tree apple-google proc apple,j314s google,hayato
+expect_contradiction apple-google aarch64 "a device tree naming Apple and Google fails"
+expect_contradiction hayato x86_64 "a Chromebook device tree on an x86 CPU fails"
+n1x_acpi n1x-google
+write_tree n1x-google proc google,hayato-rev1 google,hayato mediatek,mt8192
+expect_contradiction n1x-google aarch64 "an N1x with a Chromebook device tree fails"
+pass "Chromebook device trees are recognised, Snapdragon Chromebooks included"
+for family in n1x qualcomm gb10 chromebook; do
   case $family in
     n1x) yes=n1x-acpi no=qemu-virt ;;
-    qualcomm) yes=yoga-slim7x no=n1x-acpi ;;
+    qualcomm) yes=yoga-slim7x no=lazor ;;
     gb10) yes=gb10 no=n1x-gpu ;;
+    chromebook) yes=lazor no=yoga-slim7x ;;
   esac
   for case_name in "$yes" "$no"; do
     status=0
@@ -236,7 +253,7 @@ for family in n1x qualcomm gb10; do
 done
 TEST_ARCH=aarch64 OMARCHY_PROC_ROOT="$test_tmp/cases/n1x-gpu/proc" OMARCHY_SYS_ROOT="$test_tmp/cases/n1x-gpu/sys" \
   PATH="$stub_bin:$ROOT/bin:$PATH" "$ROOT/bin/omarchy-hw-n1x" || fail "the old omarchy-hw-n1x name still answers"
-pass "the NVIDIA N1x and GB10 are platforms of their own, and Snapdragon, the N1x and the GB10 have predicates of their own"
+pass "the NVIDIA N1x and GB10 are platforms of their own, and Snapdragon, the N1x, the GB10 and Chromebooks have predicates of their own"
 
 failing_uname="$test_tmp/failing-uname"
 mkdir -p "$failing_uname"

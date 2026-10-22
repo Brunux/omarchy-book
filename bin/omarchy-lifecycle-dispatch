@@ -100,6 +100,17 @@ fi
 # generic setup and installs. Moving an operation to required also changes
 # apple_optional in test/shell.d/lifecycle-dispatch-test.sh and the Apple column
 # and registration table in docs/lifecycle-dispatch.md.
+#
+# A Chromebook's firmware (depthcharge) boots a signed kernel partition, not
+# Limine, so its boot operations belong to omarchy-chromebook-boot and its
+# system and user setup and app-install hooks to omarchy-chromebook. Hardware
+# setup has no other way to write that partition (setup-boot), only
+# update-verify checks it after an update, and the generic factory reset
+# rebuilds Limine UKIs the machine does not boot, so those are required. Its
+# installs are unencrypted, so provisioning, luks-slots and update-takeover stay
+# optional until a Chromebook boot package owns an unlock. Moving an operation
+# to required also changes chromebook_optional in the test and the Chromebook
+# rows in docs/lifecycle-dispatch.md.
 case $platform:$operation in
   aarch64-apple:setup-system | aarch64-apple:setup-user | aarch64-apple:post-install | aarch64-apple:pre-remove)
     implementation=/usr/lib/omarchy/mac
@@ -114,6 +125,20 @@ case $platform:$operation in
       reset-prepare reset-verify reset-commit reset-rollback
       update-verify update-takeover
       luks-slots
+      setup-boot
+    )
+    ;;
+  aarch64-chromebook:setup-system | aarch64-chromebook:setup-user | aarch64-chromebook:post-install | aarch64-chromebook:pre-remove)
+    implementation=/usr/lib/omarchy/chromebook
+    package=omarchy-chromebook
+    required=()
+    ;;
+  aarch64-chromebook:*)
+    implementation=/usr/lib/omarchy/chromebook-boot
+    package=omarchy-chromebook-boot
+    required=(
+      reset-prepare reset-verify reset-commit reset-rollback
+      update-verify
       setup-boot
     )
     ;;

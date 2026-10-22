@@ -15,11 +15,12 @@ trap 'rm -rf "$work"' EXIT
 export OMARCHY_PATH="$ROOT"
 source "$ROOT/install/helpers/pacman.sh"
 
-platforms="x86 aarch64 aarch64-apple"
-# Apple Silicon has edge alone: its packages and Asahi ALARM are published for
-# edge only so far.
+platforms="x86 aarch64 aarch64-apple aarch64-chromebook"
+# Apple Silicon and Chromebooks have edge alone: their platform packages (and
+# Asahi ALARM) are published for edge only so far.
+edge_only() { [[ $1 == "aarch64-apple" || $1 == "aarch64-chromebook" ]]; }
 channels_for() {
-  if [[ $1 == "aarch64-apple" ]]; then echo "edge"; else echo "stable rc edge"; fi
+  if edge_only "$1"; then echo "edge"; else echo "stable rc edge"; fi
 }
 
 # ── the templates ────────────────────────────────────────────────────────────
@@ -27,6 +28,7 @@ channels_for() {
 [[ $(omarchy_pacman_templates x86) == "$ROOT/default/pacman" ]] || fail "x86 keeps its templates where they were"
 [[ $(omarchy_pacman_templates aarch64) == "$ROOT/default/pacman/aarch64" ]] || fail "plain aarch64 uses the aarch64 templates"
 [[ $(omarchy_pacman_templates aarch64-apple) == "$ROOT/default/pacman/aarch64-apple" ]] || fail "Apple Silicon uses its own templates"
+[[ $(omarchy_pacman_templates aarch64-chromebook) == "$ROOT/default/pacman/aarch64-chromebook" ]] || fail "Chromebooks use their own templates"
 for platform in aarch64-qualcomm aarch64-n1x aarch64-gb10; do
   [[ $(omarchy_pacman_templates "$platform") == "$ROOT/default/pacman/aarch64" ]] || fail "$platform shares the aarch64 templates"
   [[ $(omarchy_pacman_default_channel "$platform") == stable ]] || fail "$platform defaults to stable"
@@ -38,8 +40,9 @@ for platform in x86 aarch64; do
   [[ $(omarchy_pacman_default_channel "$platform") == stable ]] || fail "$platform defaults to stable"
 done
 [[ $(omarchy_pacman_default_channel aarch64-apple) == edge ]] || fail "aarch64-apple defaults to edge"
+[[ $(omarchy_pacman_default_channel aarch64-chromebook) == edge ]] || fail "aarch64-chromebook defaults to edge"
 ! omarchy_pacman_default_channel riscv 2>/dev/null || fail "an unknown platform has no default channel"
-pass "every platform defaults to stable but Apple Silicon, which defaults to edge"
+pass "every platform defaults to stable but Apple Silicon and Chromebooks, which default to edge"
 
 # pacman reads each repository list from the template, with its mirrorlist
 # standing in for /etc/pacman.d/mirrorlist.
@@ -51,7 +54,7 @@ repos() {
 for platform in $platforms; do
   templates=$(omarchy_pacman_templates "$platform")
   for channel in stable rc; do
-    [[ $platform == "aarch64-apple" ]] || continue
+    edge_only "$platform" || continue
     [[ ! -e $templates/pacman-$channel.conf && ! -e $templates/mirrorlist-$channel ]] ||
       fail "$platform has no $channel template or mirrorlist"
   done
@@ -63,6 +66,7 @@ for platform in $platforms; do
       x86) expected="omarchy core extra multilib " ;;
       aarch64) expected="omarchy core extra alarm " ;;
       aarch64-apple) expected="omarchy asahi-alarm core extra alarm aur " ;;
+      aarch64-chromebook) expected="omarchy-chromebook omarchy core extra alarm " ;;
     esac
     [[ $list == "$expected" ]] || fail "$platform $channel: repositories in order" "$list"
     # $arch stays literal: pacman fills it in on the machine.
@@ -80,7 +84,7 @@ for platform in $platforms; do
     [[ $mirror == "https://$host/$layout" ]] || fail "$platform $channel: the $channel Arch mirror" "$mirror"
   done
 done
-pass "x86 and aarch64 have templates for stable, rc and edge and Apple Silicon for edge alone, each with its repositories in order and its channel's mirrors"
+pass "x86 and aarch64 have templates for stable, rc and edge and Apple Silicon and Chromebooks for edge alone, each with its repositories in order and its channel's mirrors"
 
 # omarchy-version-channel names each template pair's channel: the menu's
 # checkmarks and a refresh with no channel go by it.
@@ -158,6 +162,7 @@ for platform in $platforms; do
     x86) templates=$SUDO_TEST_ROOT/default/pacman ;;
     aarch64) templates=$SUDO_TEST_ROOT/default/pacman/aarch64 ;;
     aarch64-apple) templates=$SUDO_TEST_ROOT/default/pacman/aarch64-apple ;;
+    aarch64-chromebook) templates=$SUDO_TEST_ROOT/default/pacman/aarch64-chromebook ;;
   esac
   # No channel named refreshes to the platform's default one.
   for channel in $(channels_for "$platform") ""; do
@@ -234,9 +239,10 @@ if refresh invalid; then fail "invalid explicit channel is refused"; fi
 assert_boundary_cold "invalid explicit channel"
 pass "an invalid explicit channel changes nothing"
 
-# A channel the platform has no template for (stable or rc on Apple Silicon),
-# or a machine whose platform can't be told, stops before anything changes.
-for platform in aarch64-apple; do
+# A channel the platform has no template for (stable or rc on Apple Silicon or
+# a Chromebook), or a machine whose platform can't be told, stops before
+# anything changes.
+for platform in aarch64-apple aarch64-chromebook; do
   for channel in stable rc; do
     reset_boundary
     if SUDO_TEST_PLATFORM=$platform refresh "$channel"; then fail "$platform: $channel is refused"; fi

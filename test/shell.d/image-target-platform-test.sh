@@ -277,6 +277,11 @@ world gb10-image aarch64
 pid1 gb10-image chroot
 manifest gb10-image $'format=1\nplatform=aarch64-gb10\n'
 expect gb10-image aarch64-gb10 "a GB10 image's manifest reads as aarch64-gb10"
+# A Chromebook card is built on a host that is anything but the Chromebook.
+world chromebook-image aarch64 raspberrypi,5-model-b brcm,bcm2712
+pid1 chromebook-image chroot
+manifest chromebook-image $'format=1\nplatform=aarch64-chromebook\n'
+expect chromebook-image aarch64-chromebook "a Chromebook image's manifest reads as aarch64-chromebook, not as its build host"
 
 # Comments and keys a later format adds are ignored.
 world commented aarch64

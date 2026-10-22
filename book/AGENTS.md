@@ -11,6 +11,17 @@ This repository is a fork of [omacom/omarchy](https://github.com/omacom/omarchy)
 - **Never fork an upstream behaviour by editing it.** If Omarchy does the wrong thing on a Chromebook, fix it in a platform package behind a dispatch operation, a drop-in or a platform file. If no seam exists, write the upstream change as its own commit, small and general, and record it in spec 0001 as a candidate pull request.
 - **Slimming follows the same rule.** Memory work uses the knobs Omarchy has (disabled shell plugins, systemd presets and drop-ins, package subtraction) before it touches a default ([`specs/0005-memory-budget.md`](specs/0005-memory-budget.md)).
 
+## Where documentation goes
+
+The same split as the root `AGENTS.md`'s three trees, inside `book/`:
+
+- `specs/`: what a feature must do and why (requirements, decisions, acceptance). A decision changes here first.
+- `docs/`: reference for people working on the port (decisions log, testing and its record, building, roadmap, the review of the source projects). Keep `docs/decisions.md`, `docs/roadmap.md` and `docs/testing.md`'s record current when a spec, a task or a verification changes.
+- `manual/`: for people using the port; never internals.
+- Each package's `README.md`: what it installs and how to use it.
+
+Write full lines in markdown, as upstream does: no hard wrapping.
+
 ## Spec first
 
 Work here is spec-driven ([`specs/README.md`](specs/README.md)):

@@ -81,6 +81,7 @@ On a Hayato:
 - [x] `install-internal`
 - [ ] First build on Arch Linux ARM (needs the packages of [0006](0006-package-repository.md))
 - [ ] Hardware acceptance
+- [ ] Grow the root partition to the card on first boot: the image's root is fixed at `--size`, so a larger card keeps the rest unused (`install-internal` already fills the eMMC)
 - [ ] LUKS (its own spec): the staged key in the kernel partition's initramfs, `provision-commit`/`provision-verify` rewriting both partitions without it
 
 ## Verification

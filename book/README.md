@@ -4,10 +4,20 @@ Omarchy on devices the ISO cannot boot, starting with ARM Chromebooks, and slimm
 
 This directory is the only part of the fork that upstream [omacom/omarchy](https://github.com/omacom/omarchy) does not have. Everything else in the repository is upstream Omarchy plus the small, upstreamable registration of the `aarch64-chromebook` platform (see [specs/0001-platform-registration.md](specs/0001-platform-registration.md)). Keeping the port here, and only here, is what keeps `git merge upstream/quattro` cheap.
 
+## Start here
+
+- **Using it:** [manual/install.md](manual/install.md), Omarchy on a Chromebook from developer mode to the internal storage.
+- **Building it:** [docs/building.md](docs/building.md), packages and a card image.
+- **Working on it:** [AGENTS.md](AGENTS.md), then [specs/](specs/README.md), [docs/decisions.md](docs/decisions.md) and [docs/testing.md](docs/testing.md).
+- **What's next:** [docs/roadmap.md](docs/roadmap.md).
+- **Where it came from:** [docs/review.md](docs/review.md), the review of LazyOS, omarchybook, omacom's repositories and postmarketOS.
+
 ## What is here
 
 | Path | What it is |
 | --- | --- |
+| [`manual/`](manual/) | For people using the port: installing, the keyboard, updates, the lite profile, moving to the eMMC. |
+| [`docs/`](docs/) | For people working on it: the decisions, testing and its record, building, the roadmap, the review of the source projects. |
 | [`specs/`](specs/) | The specs this port is built from, one per feature, with their status. Start at [`specs/README.md`](specs/README.md). |
 | [`devices/`](devices/) | One directory per supported board: its postmarketOS `deviceinfo`, the device-tree `compatible` strings that identify it, its kernel, command line, early modules and packages. Adding a board is adding a directory ([specs/0002](specs/0002-devices-and-kernels.md)). |
 | [`kernels/`](kernels/) | One directory per kernel flavor: an Arch `PKGBUILD`, the kernel config and the patch series, imported from pmaports. Several boards share a flavor. |
@@ -33,7 +43,7 @@ A Chromebook's firmware, depthcharge, has no UEFI and reads no filesystem. It lo
 
 ## Status
 
-See [`specs/README.md`](specs/README.md) for each feature's state. In short: the platform registration is done and tested; the device, kernel, boot package and image tooling are written and tested off-device, and wait for their first hardware run on the Google Hayato (MT8192, `google-asurada`); the lite profile (on by default on Chromebooks) is built and waits for that machine's first measurement.
+See [`specs/README.md`](specs/README.md) for each feature's state and [`docs/roadmap.md`](docs/roadmap.md) for what comes next. In short: the platform registration is done and tested; the device, kernel, boot package and image tooling are written and tested off-device, and wait for their first hardware run on the Google Hayato (MT8192, `google-asurada`); the lite profile (on by default on Chromebooks) is built and waits for that machine's first measurement.
 
 ## Provenance
 

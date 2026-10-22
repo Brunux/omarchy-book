@@ -46,6 +46,7 @@ LazyOS writes the partition by hand (`install-kpart.sh`, after a kernel update, 
 - **R3.11** `setup-boot` records the board, writes its modules drop-in, enables the bless service, and writes the partition when it is stale (rebuilding the initramfs first if the modules changed). With `image-first-boot` it asks for Omarchy's deferred rebuild instead of writing. *Check:* `test/write-test.sh`.
 - **R3.12** The package's mkinitcpio drop-in removes `autodetect` and `btrfs-overlayfs` from Omarchy's hooks. *Check:* `test/install-test.sh`.
 - **R3.13** `setup-system` enables keyd once and never again after an administrator turns it off. *Check:* `omarchy-chromebook/test/all`.
+- **R3.14** `setup-system` and `setup-user` apply the lite profile's system and user halves whenever `omarchy-lite` is installed, and do nothing without it ([0005](0005-memory-budget.md)). *Check:* `omarchy-chromebook/test/all`.
 
 ## Design
 
@@ -58,7 +59,7 @@ LazyOS writes the partition by hand (`install-kpart.sh`, after a kernel update, 
 | `omarchy-chromebook-kpart` | `/usr/lib/initcpio/post/` | mkinitcpio, after each image |
 | `omarchy-chromebook-bless.service` | `/usr/lib/systemd/system/` | each boot, after `local-fs.target` |
 | `50-omarchy-chromebook.conf` | `/etc/mkinitcpio.conf.d/` | mkinitcpio |
-| `setup-system` | `/usr/lib/omarchy/chromebook/` | `omarchy-lifecycle-dispatch` |
+| `setup-system`, `setup-user` | `/usr/lib/omarchy/chromebook/` | `omarchy-lifecycle-dispatch` |
 
 ### An update, step by step
 

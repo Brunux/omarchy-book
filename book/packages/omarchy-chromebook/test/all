@@ -48,7 +48,19 @@ run >/dev/null || fail "setup-system runs again"
 if run bogus >/dev/null 2>&1; then fail "setup-system refuses an unknown argument"; fi
 pass "setup-system enables keyd once and then respects the administrator"
 
+# The lite profile, when installed, rides along with each setup.
+printf '#!/bin/bash\necho "lite $*" >>"%s/calls"\n' "$work" >"$stub/omarchy-lite"
+chmod +x "$stub/omarchy-lite"
+: >"$work/calls"
+OMARCHY_CHROMEBOOK_LITE=$stub/omarchy-lite run >/dev/null
+grep -qx 'lite apply-system' "$work/calls" || fail "setup-system applies the lite profile's system half when it is installed" "$(cat "$work/calls")"
+: >"$work/calls"
+OMARCHY_CHROMEBOOK_LITE=$stub/omarchy-lite bin/omarchy-chromebook-setup-user || fail "setup-user runs"
+grep -qx 'lite apply-user' "$work/calls" || fail "setup-user applies the lite profile's user half when it is installed"
+OMARCHY_CHROMEBOOK_LITE=$work/none bin/omarchy-chromebook-setup-user || fail "setup-user does nothing, successfully, without omarchy-lite"
+pass "setup-system and setup-user apply the lite profile when it is installed, and do nothing without it"
+
 "./install" "$work/root" >/dev/null || fail "install stages the package"
-[[ -x $work/root/usr/lib/omarchy/chromebook/setup-system ]] || fail "the entrypoint is where the dispatcher looks"
+[[ -x $work/root/usr/lib/omarchy/chromebook/setup-system && -x $work/root/usr/lib/omarchy/chromebook/setup-user ]] || fail "the entrypoints are where the dispatcher looks"
 [[ -f $work/root/usr/share/omarchy-platform/key-names ]] || fail "the platform root is staged"
 pass "install stages the entrypoint where the dispatcher looks, and the platform files"

@@ -1,0 +1,16 @@
+#!/bin/bash
+
+# omarchy-chromebook-setup-user: the Chromebook's per-user setup, run as the
+# user by the setup-user lifecycle operation (at the end of user setup, and
+# again once the first session is up).
+#
+# Chromebooks get the lite profile by default: its user half runs whenever
+# omarchy-lite is installed (book/specs/0005-memory-budget.md). Each of its
+# steps runs once, so this is safe to run on every setup.
+
+set -euo pipefail
+
+lite=${OMARCHY_CHROMEBOOK_LITE:-/usr/bin/omarchy-lite}
+if [[ -x $lite ]]; then
+  exec "$lite" apply-user
+fi

@@ -12,6 +12,9 @@
 #   keyd    the top row has no F-keys without it (Ctrl+Alt+F<n> for a
 #           console, Search+top row for F1-F10).
 #
+# and the lite profile, which Chromebooks get by default: its system half runs
+# whenever omarchy-lite is installed (book/specs/0005-memory-budget.md).
+#
 # Each step runs once and leaves a marker, so an administrator who turns it off
 # afterwards is not overridden by the next hardware setup. A step added later
 # brings a new marker name, or it would never run on a machine that ran this.
@@ -41,4 +44,10 @@ if [[ ! -e $markers/keyd-enabled ]]; then
   fi
   : >"$markers/keyd-enabled"
   echo "Enabled keyd: the top row is the action row, and Search turns it into F1-F10."
+fi
+
+lite=/usr/bin/omarchy-lite
+(( EUID == 0 )) || lite=${OMARCHY_CHROMEBOOK_LITE:-$lite}
+if [[ -x $lite ]]; then
+  "$lite" apply-system
 fi

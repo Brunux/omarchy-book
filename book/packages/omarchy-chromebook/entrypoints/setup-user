@@ -1,0 +1,4 @@
+#!/bin/bash
+
+# setup-user: the Chromebook's per-user setup, as the user.
+exec /usr/bin/omarchy-chromebook-setup-user "$@"

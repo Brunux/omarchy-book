@@ -1,0 +1,54 @@
+#!/bin/bash
+
+# The package's tests, from this directory alone.
+
+set -euo pipefail
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
+
+pass() { echo "ok - $*"; }
+fail() {
+  echo "not ok - $1"
+  [[ -z ${2:-} ]] || printf '%s\n' "$2" | sed 's/^/# /'
+  exit 1
+}
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+
+# keyd takes the first [ids] entry a device matches, so the built-in
+# keyboard's exclusions (power button and lid, headset jack) must come before
+# the k:0000:0000 that matches it, or logind loses the lid switch and the power
+# button to keyd's virtual device.
+ids=$(sed -n '/^\[ids\]/,/^\[/p' files/etc/keyd/default.conf | grep -v '^\s*#' | grep -v '^\s*$' | grep -v '^\[')
+first_include=$(grep -n '^k:0000:0000$' <<<"$ids" | cut -d: -f1)
+last_exclude=$(grep -n '^-' <<<"$ids" | tail -n1 | cut -d: -f1)
+[[ -n $first_include && -n $last_exclude ]] && (( last_exclude < first_include )) ||
+  fail "keyd's exclusions come before the built-in keyboard's id" "$ids"
+pass "keyd excludes the power button, lid and headset jack before it matches the built-in keyboard"
+
+while read -r keysym name rest; do
+  [[ -z $keysym || $keysym == \#* ]] && continue
+  [[ $keysym =~ ^[A-Za-z0-9_]+$ && $name =~ ^[A-Za-z0-9_]+$ && -z $rest ]] ||
+    fail "each key-names line is <keysym> <name>, as omarchy-menu-keybindings reads it" "$keysym $name $rest"
+done <files/usr/share/omarchy-platform/key-names
+pass "key-names is in the format Omarchy's keybindings menu reads"
+
+stub=$work/bin
+mkdir -p "$stub"
+printf '#!/bin/bash\necho "systemctl $*" >>"%s/calls"\n' "$work" >"$stub/systemctl"
+chmod +x "$stub/systemctl"
+run() { OMARCHY_CHROMEBOOK_STATE="$work/state" PATH="$stub:$PATH" bin/omarchy-chromebook-setup-system "$@"; }
+
+run image-first-boot >/dev/null || fail "setup-system runs on an image's first boot"
+grep -qx 'systemctl enable --quiet keyd.service' "$work/calls" || fail "setup-system enables keyd"
+! grep -q 'systemctl start' "$work/calls" || fail "an image's first boot starts nothing itself"
+: >"$work/calls"
+run >/dev/null || fail "setup-system runs again"
+[[ ! -s $work/calls ]] || fail "a second run leaves keyd as the administrator left it" "$(cat "$work/calls")"
+if run bogus >/dev/null 2>&1; then fail "setup-system refuses an unknown argument"; fi
+pass "setup-system enables keyd once and then respects the administrator"
+
+"./install" "$work/root" >/dev/null || fail "install stages the package"
+[[ -x $work/root/usr/lib/omarchy/chromebook/setup-system ]] || fail "the entrypoint is where the dispatcher looks"
+[[ -f $work/root/usr/share/omarchy-platform/key-names ]] || fail "the platform root is staged"
+pass "install stages the entrypoint where the dispatcher looks, and the platform files"

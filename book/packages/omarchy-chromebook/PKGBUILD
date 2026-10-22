@@ -1,0 +1,31 @@
+# Maintainer: Omarchy Book
+#
+# The runtime half of ARM Chromebook support (aarch64-chromebook) for Omarchy:
+# what omarchy-lifecycle-dispatch runs for setup-system, the keyd map for the
+# action row, the key names the keybindings menu shows, and the journal cap for
+# eMMC. The boot chain is omarchy-chromebook-boot. Built from this directory of
+# the omarchy-book repository.
+
+pkgname=omarchy-chromebook
+pkgver=$(<version)
+pkgrel=1
+pkgdesc='Omarchy platform for ARM Chromebooks: action-row keyboard map and hardware defaults'
+arch=(aarch64)
+url='https://github.com/Brunux/omarchy-book/tree/quattro/book/packages/omarchy-chromebook'
+license=(MIT)
+# keyd reads the shipped map. alsa-ucm-conf carries the boards' audio routing
+# (the MT8192's BootSequence), which alsa-utils runs when the card appears; the
+# sound card has only a dummy output without them.
+depends=(alsa-ucm-conf alsa-utils bash keyd systemd)
+checkdepends=(bash coreutils)
+backup=(etc/keyd/default.conf)
+provides=(omarchy-platform)
+conflicts=(omarchy-platform)
+
+package() {
+  "$startdir/install" "$pkgdir"
+}
+
+check() {
+  "$startdir/test/all"
+}

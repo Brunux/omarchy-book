@@ -1,0 +1,12 @@
+# A Chromebook has no function row: the top row emits action keys, which keyd
+# (/etc/keyd/default.conf) passes on as the XF86 keysyms Omarchy binds. This
+# tells the keybindings menu which physical key each of those keysyms sits on,
+# so it shows the action row's legends instead of a function row the keyboard
+# does not have.
+#
+# Format: <keysym> <name>, both ^[A-Za-z0-9_]+$; one per line, '#' comments.
+XF86MonBrightnessDown F6
+XF86MonBrightnessUp F7
+XF86AudioMute F8
+XF86AudioLowerVolume F9
+XF86AudioRaiseVolume F10

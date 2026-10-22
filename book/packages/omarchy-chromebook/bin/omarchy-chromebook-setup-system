@@ -1,0 +1,44 @@
+#!/bin/bash
+
+# omarchy-chromebook-setup-system [image-first-boot]: the Chromebook's
+# machine-wide setup, run by the setup-system lifecycle operation on every
+# hardware setup (book/specs/0003-boot-package.md covers the boot half).
+#
+# Everything else the platform needs is a file in a vendor directory (keyd's
+# map, the key names, the journal cap) or a package dependency (the board's ALSA
+# UCM in alsa-ucm-conf, which alsa-utils runs on card add). What is left is
+# turning on what ships off:
+#
+#   keyd    the top row has no F-keys without it (Ctrl+Alt+F<n> for a
+#           console, Search+top row for F1-F10).
+#
+# Each step runs once and leaves a marker, so an administrator who turns it off
+# afterwards is not overridden by the next hardware setup. A step added later
+# brings a new marker name, or it would never run on a machine that ran this.
+
+set -euo pipefail
+
+first_boot=0
+case ${1:-} in
+  "") ;;
+  image-first-boot) first_boot=1 ;;
+  *)
+    echo "Usage: omarchy-chromebook-setup-system [image-first-boot]" >&2
+    exit 2
+    ;;
+esac
+
+markers=${OMARCHY_CHROMEBOOK_STATE:-/var/lib/omarchy-chromebook}
+(( EUID != 0 )) || markers=/var/lib/omarchy-chromebook
+mkdir -p "$markers"
+
+if [[ ! -e $markers/keyd-enabled ]]; then
+  systemctl enable --quiet keyd.service
+  # The first boot's deferred setup runs before the login screen, and the
+  # enabled unit starts with it; elsewhere start it now.
+  if (( ! first_boot )) && [[ -d /run/systemd/system ]]; then
+    systemctl start keyd.service
+  fi
+  : >"$markers/keyd-enabled"
+  echo "Enabled keyd: the top row is the action row, and Search turns it into F1-F10."
+fi

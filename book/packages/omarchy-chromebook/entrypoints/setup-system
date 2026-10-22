@@ -1,0 +1,4 @@
+#!/bin/bash
+
+# setup-system [image-first-boot]: the Chromebook's machine-wide setup.
+exec /usr/bin/omarchy-chromebook-setup-system "$@"

@@ -6,6 +6,7 @@ The kernel postmarketOS builds for MediaTek Chromebooks with MT8183 and later, `
 
 - pmaports `device/community/linux-postmarketos-mediatek-mt81/`, branch `main`, compared on 2026-10-22 at commit `63713ff744122484552736cb28e6980f6ea0d190`: `APKBUILD.reference` is that recipe byte for byte (pkgver 7.2.7, pkgrel 0).
 - `patches/*.patch` are pmaports' patches byte for byte (their sha512s match the APKBUILD's), and `patches/series` is their order in the APKBUILD's `source=`.
+- One patch is ours, last in `patches/series`: `book-tools-include-u128.patch` backports Linux 7.3's `__s128`/`__u128` typedefs to `tools/include/linux/types.h`. Arch Linux ARM's `linux-api-headers` 7.3 use `__u128` in arm64's `asm/ptrace.h`, and the 7.2 tree's own `linux/types.h` shadows the system one, so `resolve_btfids` failed to build (first CI build, 2026-10-22). Alpine's older headers never hit it. Drop it when the kernel moves to 7.3.
 - `config.aarch64` came through [LazyOS](https://github.com/Brunux/LazyOS) (`kernels/mediatek-mt81/config.aarch64` at `0cd4e06`), where it boots the Google Hayato.
 
 ## Changes from pmaports' config

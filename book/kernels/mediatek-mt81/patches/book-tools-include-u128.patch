@@ -1,0 +1,22 @@
+Subject: [PATCH] tools/include: add __s128 and __u128
+
+Backported from Linux 7.3's tools/include/linux/types.h. The 7.3 UAPI
+headers (Arch Linux ARM's linux-api-headers 7.3) declare arm64's
+user_fpsimd_state and user_pac_address_keys with __u128, and the tools'
+own linux/types.h shadows the system one, so resolve_btfids' libbpf
+fails to build against them on a 7.2 tree. Drop with the move to 7.3.
+---
+--- a/tools/include/linux/types.h
++++ b/tools/include/linux/types.h
+@@ -23,6 +23,11 @@
+ 	__GFP_HIGH
+ } gfp_t;
+ 
++#ifdef __SIZEOF_INT128__
++typedef __signed__ __int128 __s128 __attribute__((aligned(16)));
++typedef unsigned __int128 __u128 __attribute__((aligned(16)));
++#endif
++
+ /*
+  * We define u64 as uint64_t for every architecture
+  * so that we can print it with "%"PRIx64 without getting warnings.

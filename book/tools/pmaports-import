@@ -1,0 +1,190 @@
+#!/bin/bash
+
+# Import a board or a kernel from postmarketOS' pmaports, or show how an
+# imported one has drifted from it (book/specs/0002-devices-and-kernels.md).
+#
+#   book/tools/pmaports-import device <codename> [--ref REF]
+#   book/tools/pmaports-import kernel <flavor> [--ref REF]
+#
+# A new board or kernel is written into book/devices/<codename> or
+# book/kernels/<flavor>, with PROVENANCE.md naming the pmaports commit. An
+# existing one is never overwritten: the differences are printed, to be applied
+# by hand with the reason recorded in its PROVENANCE.md.
+#
+# A new board needs two things only a person can supply, both left as a TODO
+# that book/tools/check-devices refuses until they are filled in: its
+# device-tree compatible strings (in compatible) and Arch Linux ARM's names for
+# the firmware its APKBUILD depends on (in packages).
+
+set -euo pipefail
+
+book=$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/.." && pwd)
+gitlab=https://gitlab.postmarketos.org
+project=postmarketOS%2Fpmaports
+
+fail() { echo "Error: $*" >&2; exit 1; }
+usage() { sed -n '6,7p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+
+kind=${1:-}
+name=${2:-}
+[[ $kind == "device" || $kind == "kernel" ]] && [[ $name =~ ^[a-z0-9][a-z0-9-]*$ ]] || usage
+shift 2
+ref=main
+while (( $# )); do
+  case $1 in
+    --ref) ref=${2:?}; shift 2 ;;
+    *) usage ;;
+  esac
+done
+
+commit=$(curl -fsS "$gitlab/api/v4/projects/$project/repository/commits/$ref" |
+  sed -n 's/^{"id":"\([0-9a-f]\{40\}\)".*/\1/p') || true
+[[ -n $commit ]] || fail "cannot resolve pmaports $ref"
+
+if [[ $kind == "device" ]]; then
+  package=device-$name
+else
+  package=linux-postmarketos-$name
+fi
+for category in main community testing; do
+  if curl -fsS -o /dev/null "$gitlab/postmarketOS/pmaports/-/raw/$commit/device/$category/$package/APKBUILD" 2>/dev/null; then
+    path=device/$category/$package
+    break
+  fi
+done
+[[ -n ${path:-} ]] || fail "pmaports $ref has no $package in device/{main,community,testing}"
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+fetch() {
+  curl -fsS -o "$work/$1" "$gitlab/postmarketOS/pmaports/-/raw/$commit/$path/$1"
+}
+fetch APKBUILD
+
+# The APKBUILD's source= entries that are files in the package directory, with
+# the variables pmaports uses in them expanded (config-$_flavor.$CARCH, where
+# _flavor is the package name without its linux- prefix).
+local_sources() {
+  local pkgname flavor
+  pkgname=$(sed -n 's/^pkgname=//p' "$work/APKBUILD")
+  flavor=${pkgname#linux-}
+  sed -n '/^source="/,/"/p' "$work/APKBUILD" | sed -e 's/^source="//' -e 's/"$//' |
+    tr -s '[:space:]' '\n' | grep -v '://' | sed '/^$/d' |
+    sed -e "s/\${_flavor}/$flavor/g" -e "s/\$_flavor/$flavor/g" -e 's/\${CARCH}/aarch64/g' -e 's/\$CARCH/aarch64/g' |
+    grep -v '\$'
+}
+
+echo "pmaports $commit, $path"
+
+if [[ $kind == "device" ]]; then
+  target=$book/devices/$name
+  fetch deviceinfo
+  for file in modules-initfs kernel-cmdline.conf; do
+    if local_sources | grep -qx "$file"; then fetch "$file"; fi
+  done
+  flavor=$(grep -o 'linux-postmarketos-[a-z0-9-]*' "$work/APKBUILD" | head -n1)
+  flavor=${flavor#linux-postmarketos-}
+
+  if [[ -d $target ]]; then
+    for file in deviceinfo modules-initfs kernel-cmdline.conf; do
+      [[ -f $work/$file ]] || continue
+      diff -u "$target/$file" "$work/$file" --label "ours/$file" --label "pmaports/$file" || true
+    done
+    diff -u "$target/APKBUILD.reference" "$work/APKBUILD" --label ours/APKBUILD.reference --label pmaports/APKBUILD || true
+    [[ -z $flavor || $(cat "$target/kernel") == "$flavor" ]] || echo "pmaports now names the kernel $flavor"
+    exit 0
+  fi
+
+  mkdir -p "$target"
+  cp "$work/deviceinfo" "$target/deviceinfo"
+  cp "$work/APKBUILD" "$target/APKBUILD.reference"
+  for file in modules-initfs kernel-cmdline.conf; do
+    [[ -f $work/$file ]] && cp "$work/$file" "$target/$file"
+  done
+  [[ -n $flavor ]] || fail "the APKBUILD names no linux-postmarketos kernel"
+  echo "$flavor" >"$target/kernel"
+  dtb=$(sed -n 's/^deviceinfo_dtb="\(.*\)"$/\1/p' "$work/deviceinfo")
+  cat >"$target/compatible" <<EOF
+# TODO: the board's device-tree compatible strings, one per line, most
+# specific first, from the root node of each device tree deviceinfo_dtb
+# selects ($dtb) in the kernel's arch/arm64/boot/dts. Board names only
+# (google,<board>), never the SoC.
+TODO
+EOF
+  {
+    echo "# TODO: Arch Linux ARM's names for what the APKBUILD's depends need beyond"
+    echo "# the platform packages, mostly firmware. pmaports' depends were:"
+    sed -n '/^depends="/,/"/p' "$work/APKBUILD" | sed -e 's/^depends="//' -e 's/"$//' | tr -s '[:space:]' '\n' | sed '/^$/d' | sed 's/^/#   /'
+  } >"$target/packages"
+  cat >"$target/PROVENANCE.md" <<EOF
+# Provenance: $name
+
+## Source
+
+pmaports \`$path/\` at \`$commit\`, imported by \`book/tools/pmaports-import\`: \`deviceinfo\`, \`APKBUILD.reference\` and the files beside them are pmaports' byte for byte.
+
+## Changes from pmaports
+
+None yet.
+
+## Written for this port
+
+- \`compatible\`, \`kernel\`, \`packages\`.
+EOF
+  echo "Wrote $target. Fill in compatible and packages, then run book/tools/check-devices."
+  [[ -d $book/kernels/$flavor ]] || echo "Its kernel is new too: book/tools/pmaports-import kernel $flavor"
+  exit 0
+fi
+
+# ── a kernel ─────────────────────────────────────────────────────────────────
+
+target=$book/kernels/$name
+mkdir -p "$work/patches"
+while IFS= read -r file; do
+  if [[ $file == *.patch ]]; then
+    curl -fsS -o "$work/patches/$file" "$gitlab/postmarketOS/pmaports/-/raw/$commit/$path/$file"
+  else
+    fetch "$file"
+  fi
+done < <(local_sources)
+config=$(local_sources | grep '^config-.*\.aarch64$' | head -n1 || true)
+[[ -n $config ]] || fail "the APKBUILD has no aarch64 config"
+
+if [[ -d $target ]]; then
+  diff -u "$target/APKBUILD.reference" "$work/APKBUILD" --label ours/APKBUILD.reference --label pmaports/APKBUILD || true
+  diff -ru "$target/patches" "$work/patches" -x series || true
+  echo "pmaports' config differs from ours in $(diff <(sort "$target/config.aarch64") <(sort "$work/$config") | grep -c '^[<>]' || true) lines; ours carries the changes in $target/PROVENANCE.md."
+  exit 0
+fi
+
+pkgver=$(sed -n 's/^pkgver=//p' "$work/APKBUILD")
+tarball_sha=$(sed -n "s/^\([0-9a-f]\{128\}\)  linux-$pkgver.tar.xz$/\1/p" "$work/APKBUILD")
+mkdir -p "$target/patches"
+cp "$work/APKBUILD" "$target/APKBUILD.reference"
+cp "$work/$config" "$target/config.aarch64"
+local_sources | grep '\.patch$' >"$target/patches/series" || true
+cp "$work"/patches/*.patch "$target/patches/" 2>/dev/null || true
+sed -e "s/^pkgbase=.*/pkgbase=linux-book-$name/" \
+  -e "s/^pkgver=.*/pkgver=$pkgver/" -e "s/^pkgrel=.*/pkgrel=1/" \
+  -e "s|^url=.*|url='$gitlab/postmarketOS/pmaports/-/tree/main/$path'|" \
+  -e "s/^pkgdesc=.*/pkgdesc='Linux from postmarketOS ($package)'/" \
+  "$book/kernels/mediatek-mt81/PKGBUILD" >"$target/PKGBUILD"
+python3 - "$target/PKGBUILD" "$tarball_sha" "$(sha512sum "$target/config.aarch64" | cut -d' ' -f1)" <<'PY'
+import re, sys
+path, tarball, config = sys.argv[1:]
+text = open(path).read()
+text = re.sub(r"sha512sums=\(\n  '[0-9a-f]+'\n  '[0-9a-f]+'\n\)", f"sha512sums=(\n  '{tarball}'\n  '{config}'\n)", text)
+open(path, "w").write(text)
+PY
+cat >"$target/PROVENANCE.md" <<EOF
+# Provenance: $name
+
+## Source
+
+pmaports \`$path/\` at \`$commit\`, imported by \`book/tools/pmaports-import\`: \`APKBUILD.reference\`, \`config.aarch64\` and \`patches/\` are pmaports' byte for byte, and \`patches/series\` is their order in the APKBUILD. The \`PKGBUILD\` was generated from \`kernels/mediatek-mt81/PKGBUILD\`; read its header comment and adjust it to this kernel.
+
+## Changes from pmaports' config
+
+None yet. Each change goes in a table here with the reason, as in \`kernels/mediatek-mt81/PROVENANCE.md\`.
+EOF
+echo "Wrote $target. Review the PKGBUILD, then run book/tools/check-devices."

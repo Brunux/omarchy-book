@@ -1,0 +1,116 @@
+#!/bin/bash
+
+# Check every board profile in book/devices and every kernel in book/kernels
+# (book/specs/0002-devices-and-kernels.md), with the same parser the boot
+# package runs on the device. Prints one line per problem and exits non-zero
+# when there is any.
+
+set -euo pipefail
+
+book=$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/.." && pwd)
+lib=$book/packages/omarchy-chromebook-boot/lib
+problems=0
+
+problem() {
+  echo "$1: $2"
+  problems=$(( problems + 1 ))
+}
+
+# Parses a deviceinfo the way the device does, in a subshell, since the parser
+# exits on the first bad line. Prints "key=value" lines.
+deviceinfo() {
+  bash -c '
+    source "$1/common.sh"; source "$1/device.sh"
+    cb_deviceinfo_read "$2"
+    for key in "${!cb_deviceinfo[@]}"; do printf "%s=%s\n" "$key" "${cb_deviceinfo[$key]}"; done
+  ' check "$lib" "$1" 2>&1
+}
+
+lines() {
+  sed -e 's/[[:space:]]*#.*$//' -e 's/^[[:space:]]*//' -e '/^$/d' "$1"
+}
+
+declare -A claimed=()
+for dir in "$book"/devices/*/; do
+  dir=${dir%/}
+  codename=${dir##*/}
+  where=devices/$codename
+
+  for file in deviceinfo compatible kernel PROVENANCE.md; do
+    [[ -f $dir/$file ]] || problem "$where" "has no $file"
+  done
+  [[ -f $dir/deviceinfo ]] || continue
+
+  if ! info=$(deviceinfo "$dir/deviceinfo"); then
+    problem "$where/deviceinfo" "${info##*Error: }"
+    continue
+  fi
+  declare -A d=()
+  while IFS='=' read -r key value; do d[$key]=$value; done <<<"$info"
+
+  [[ ${d[codename]:-} == "$codename" ]] || problem "$where/deviceinfo" "deviceinfo_codename is '${d[codename]:-}', not the directory's name"
+  [[ ${d[arch]:-} == "aarch64" ]] || problem "$where/deviceinfo" "deviceinfo_arch is '${d[arch]:-}'; only aarch64 boards are supported"
+  if [[ ${d[generate_depthcharge_image]:-} == "true" ]]; then
+    for key in depthcharge_board dtb cgpt_kpart_start cgpt_kpart_size; do
+      [[ -n ${d[$key]:-} ]] || problem "$where/deviceinfo" "a depthcharge board needs deviceinfo_$key"
+    done
+  else
+    problem "$where/deviceinfo" "not a depthcharge board; only aarch64-chromebook boards are supported so far"
+  fi
+  unset d
+
+  if [[ -f $dir/compatible ]]; then
+    count=0
+    while IFS= read -r name; do
+      count=$(( count + 1 ))
+      [[ $name =~ ^[a-z0-9-]+,[A-Za-z0-9,._+-]+$ ]] || problem "$where/compatible" "not a device-tree compatible string: $name"
+      # The SoC names many boards: claiming it would pick this profile for all of them.
+      [[ $name != mediatek,* && $name != qcom,* && $name != rockchip,* ]] || problem "$where/compatible" "$name is a SoC, not a board"
+      if [[ -n ${claimed[$name]:-} ]]; then
+        problem "$where/compatible" "$name is claimed by devices/${claimed[$name]} too"
+      fi
+      claimed[$name]=$codename
+    done < <(lines "$dir/compatible")
+    (( count )) || problem "$where/compatible" "names no board"
+  fi
+
+  if [[ -f $dir/kernel ]]; then
+    flavor=$(lines "$dir/kernel" | head -n1)
+    if [[ ! -f $book/kernels/$flavor/PKGBUILD ]]; then
+      problem "$where/kernel" "names the flavor '$flavor', which has no kernels/$flavor/PKGBUILD"
+    fi
+  fi
+
+  if [[ -f $dir/packages ]] && grep -q "^# TODO" "$dir/packages"; then
+    problem "$where/packages" "still has its TODO: name the packages the board needs"
+  fi
+
+  if [[ -f $dir/modules-initfs ]]; then
+    while IFS= read -r module; do
+      [[ $module =~ ^[A-Za-z0-9_-]+$ ]] || problem "$where/modules-initfs" "not a module name: $module"
+    done < <(lines "$dir/modules-initfs")
+  fi
+done
+
+for dir in "$book"/kernels/*/; do
+  dir=${dir%/}
+  flavor=${dir##*/}
+  where=kernels/$flavor
+  for file in PKGBUILD config.aarch64 PROVENANCE.md; do
+    [[ -f $dir/$file ]] || problem "$where" "has no $file"
+  done
+  [[ -f $dir/PKGBUILD ]] || continue
+  pkgbase=$(sed -n 's/^pkgbase=//p' "$dir/PKGBUILD")
+  [[ $pkgbase == "linux-book-$flavor" ]] || problem "$where/PKGBUILD" "pkgbase is '$pkgbase', not linux-book-$flavor"
+  if [[ -f $dir/patches/series ]]; then
+    while IFS= read -r patch; do
+      [[ -f $dir/patches/$patch ]] || problem "$where/patches/series" "lists $patch, which is not in patches/"
+    done < <(lines "$dir/patches/series")
+  fi
+done
+
+if (( problems )); then
+  echo "$problems problem(s)"
+  exit 1
+fi
+echo "Every board profile and kernel checks out."

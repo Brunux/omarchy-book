@@ -1,0 +1,167 @@
+# Maintainer: Omarchy Book
+#
+# Mainline Linux for MediaTek Chromebooks with MT8183 and later (MT8186,
+# MT8192, MT8195), as postmarketOS builds it: pmaports'
+# linux-postmarketos-mediatek-mt81 (APKBUILD.reference) repackaged for Arch
+# Linux ARM. See PROVENANCE.md for what differs and book/specs/0002 for the
+# kernel model.
+#
+# The files follow Arch's layout, so mkinitcpio's own pacman hooks install and
+# remove the kernel: vmlinuz and pkgbase in /usr/lib/modules/<release>, giving
+# /boot/vmlinuz-$pkgbase and /boot/initramfs-$pkgbase.img. The device trees sit
+# beside them in /usr/lib/modules/<release>/dtbs, where omarchy-chromebook-boot
+# picks the board's for the signed kernel partition.
+#
+# The release is <pkgver><CONFIG_LOCALVERSION> (7.2.7-mt81): pkgrel is not part
+# of it, so a rebuild of the same kernel keeps its modules directory.
+
+pkgbase=linux-book-mediatek-mt81
+pkgname=("$pkgbase" "$pkgbase-headers")
+pkgver=7.2.7
+pkgrel=1
+pkgdesc='Linux for MediaTek Chromebooks (MT8183 and later), from postmarketOS'
+url='https://gitlab.postmarketos.org/postmarketOS/pmaports/-/tree/main/device/community/linux-postmarketos-mediatek-mt81'
+arch=(aarch64)
+license=(GPL-2.0-only)
+makedepends=(
+  bc
+  clang
+  cpio
+  findutils
+  gettext
+  libelf
+  lld
+  llvm
+  openssl
+  pahole
+  perl
+  python
+  rust
+  rust-bindgen
+  rust-src
+  tar
+  xz
+  zlib
+  zstd
+)
+options=(!debug !strip)
+
+_srcname=linux-$pkgver
+# The patches are applied from patches/series in prepare(), in the order
+# pmaports lists them: makepkg sources must sit beside the PKGBUILD, and the
+# series file stays the one record of the order.
+source=(
+  "https://cdn.kernel.org/pub/linux/kernel/v${pkgver%%.*}.x/$_srcname.tar.xz"
+  config.aarch64
+)
+# The tarball's checksum is pmaports'.
+sha512sums=(
+  '9a7ee3e35e1e4eea44fd2fadce7b51deb9cae8b1e19ed4d8dc1e59d2e310ffa6dae508a9b0919d2d3cd29d00ca79fd473e7540a3cfb1124e56c4de091915a9d9'
+  '054d046f337c646f8fe483fd32e1974368a1b3dd91d10c6d1f06928821c6d91e59ac1302290f2e4bc0ab48a0ac1dcddf9caeb2c4f71b6d1636bf57750fdb541e'
+)
+
+export KBUILD_BUILD_HOST=omarchy-book
+export KBUILD_BUILD_USER=$pkgbase
+export KBUILD_BUILD_TIMESTAMP="$(date -Ru${SOURCE_DATE_EPOCH:+d @$SOURCE_DATE_EPOCH})"
+# pmaports builds with clang and lld.
+export LLVM=1
+
+prepare() {
+  cd "$_srcname"
+
+  local patch
+  while read -r patch; do
+    [[ -n $patch && $patch != \#* ]] || continue
+    echo "Applying $patch"
+    patch -Np1 --no-backup-if-mismatch <"$startdir/patches/$patch"
+  done <"$startdir/patches/series"
+
+  cp ../config.aarch64 .config
+  make olddefconfig
+  # The shipped config is the source of truth: show anything olddefconfig
+  # changed, so drift is seen at build time rather than on the device.
+  diff -u ../config.aarch64 .config || :
+
+  make -s kernelrelease >version
+  echo "Prepared $pkgbase $(<version)"
+}
+
+build() {
+  cd "$_srcname"
+  make all
+}
+
+_package() {
+  pkgdesc="$pkgdesc: kernel, modules and device trees"
+  depends=(coreutils initramfs kmod)
+  optdepends=(
+    "$pkgbase-headers: to build out-of-tree modules"
+    'linux-firmware-mediatek: SCP, VPU and MediaTek Wi-Fi firmware'
+    'wireless-regdb: the wireless channels allowed in your country'
+  )
+
+  cd "$_srcname"
+  local release modulesdir
+  release=$(<version)
+  modulesdir="$pkgdir/usr/lib/modules/$release"
+
+  # zinstall's image (Image.gz), the image pmaports and LazyOS boot.
+  install -Dm644 "$(make -s image_name)" "$modulesdir/vmlinuz"
+  # mkinitcpio names /boot/vmlinuz-$pkgbase and its initramfs after this.
+  echo "$pkgbase" | install -Dm644 /dev/stdin "$modulesdir/pkgbase"
+
+  make INSTALL_DTBS_PATH="$modulesdir/dtbs" dtbs_install
+
+  ZSTD_CLEVEL=19 make INSTALL_MOD_PATH="$pkgdir/usr" INSTALL_MOD_STRIP=1 \
+    DEPMOD=/doesnt/exist modules_install # depmod runs from the kernel's pacman hook
+  rm -f "$modulesdir/build"
+}
+
+_package-headers() {
+  pkgdesc="$pkgdesc: headers and scripts for building modules"
+  depends=(clang lld llvm libelf openssl pahole zlib zstd)
+
+  cd "$_srcname"
+  local builddir
+  builddir="$pkgdir/usr/lib/modules/$(<version)/build"
+
+  install -Dt "$builddir" -m644 .config Makefile Module.symvers System.map version vmlinux
+  install -Dt "$builddir/kernel" -m644 kernel/Makefile
+  install -Dt "$builddir/arch/arm64" -m644 arch/arm64/Makefile
+  cp -t "$builddir" -a scripts
+  ln -srt "$builddir" "$builddir/scripts/gdb/vmlinux-gdb.py"
+
+  if [[ $(scripts/config -s CONFIG_DEBUG_INFO_BTF_MODULES) == "y" ]]; then
+    install -Dt "$builddir/tools/bpf/resolve_btfids" tools/bpf/resolve_btfids/resolve_btfids
+  fi
+
+  cp -t "$builddir" -a include
+  cp -t "$builddir/arch/arm64" -a arch/arm64/include
+  install -Dt "$builddir/arch/arm64/kernel" -m644 arch/arm64/kernel/asm-offsets.s
+  find . -name 'Kconfig*' -exec install -Dm644 {} "$builddir/{}" \;
+
+  if [[ $(scripts/config -s CONFIG_RUST) == "y" ]]; then
+    install -Dt "$builddir/rust" -m644 rust/*.rmeta
+    install -Dt "$builddir/rust" rust/*.so
+  fi
+
+  make INSTALL_MOD_PATH="$pkgdir/usr" vdso_install link=
+
+  local arch
+  for arch in "$builddir"/arch/*/; do
+    [[ $arch == */arm64/ ]] || rm -r "$arch"
+  done
+  rm -r "$builddir/Documentation"
+  find -L "$builddir" -type l -delete
+  find "$builddir" -type f -name '*.o' -delete
+
+  mkdir -p "$pkgdir/usr/src"
+  ln -sr "$builddir" "$pkgdir/usr/src/$pkgbase"
+}
+
+for _p in "${pkgname[@]}"; do
+  eval "package_$_p() {
+    $(declare -f "_package${_p#$pkgbase}")
+    _package${_p#$pkgbase}
+  }"
+done

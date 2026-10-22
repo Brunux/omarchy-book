@@ -1,0 +1,6 @@
+# Arch Linux ARM packages this board needs beyond the platform's, one per line.
+# The kernel is not listed: it is the `kernel` file's flavor (linux-book-<flavor>).
+
+# The MT8192's SCP firmware and the RTW88 (Realtek 8822CE) Wi-Fi and Bluetooth.
+linux-firmware-mediatek
+linux-firmware-realtek

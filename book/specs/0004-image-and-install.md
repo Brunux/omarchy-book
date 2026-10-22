@@ -30,7 +30,7 @@ A **card image**: Omarchy installed in a chroot exactly as the ISO installs it, 
 ## Requirements
 
 - **R4.1** `build-image --device <codename>` produces `omarchy-<codename>-<date>.img.xz` and its SHA-256, with the layout above. *Check:* `book/packages/omarchy-chromebook-boot/test/layout-test.sh` (geometry, fstab); a build on Arch Linux ARM.
-- **R4.2** The image holds the packages the ISO would pacstrap for `aarch64-chromebook`: archinstall's base without x86 and Limine parts, `omarchy-dev` and `omarchy-settings-dev`, the board's kernel and packages, and `omarchy-pkg-defaults aarch64-chromebook` with Arch Linux ARM's names. *Check:* the build log.
+- **R4.2** The image holds the packages the ISO would pacstrap for `aarch64-chromebook`: archinstall's base without x86 and Limine parts, `omarchy-dev` and `omarchy-settings-dev`, the board's kernel and packages, and `omarchy-pkg-defaults aarch64-chromebook` with Arch Linux ARM's names, adjusted by the lite profile unless `--profile full` ([R5.6](0005-memory-budget.md)). *Check:* the build log.
 - **R4.3** The image is set up by `omarchy-apply-system --defer-provisioning --first-install` with the image manifest `platform=aarch64-chromebook` and the ISO's environment, so hardware setup and owner setup run on the first boot. *Check:* first boot on a Hayato.
 - **R4.4** Both kernel partitions hold the image built from the system, the first at the higher priority, both successful; the system's records name both. *Check:* `test/write-test.sh` (write-disk); `omarchy-chromebook-boot status` on first boot.
 - **R4.5** The image is sealed: empty `/etc/machine-id` (not `uninitialized`), no D-Bus machine id, no SSH host keys, empty package cache and journal, and `/etc/pacman.conf` is the published template even when built from a local repository. *Check:* inspecting a built image.
@@ -41,7 +41,7 @@ A **card image**: Omarchy installed in a chroot exactly as the ISO installs it, 
 ### Building
 
 ```
-sudo book/tools/build-image --device google-asurada --output out/ [--size 8G] [--repo ./repo]
+sudo book/tools/build-image --device google-asurada --output out/ [--size 8G] [--profile lite|full] [--repo ./repo]
 ```
 
 1. Read the board's profile from `book/devices/` with the boot package's parser.

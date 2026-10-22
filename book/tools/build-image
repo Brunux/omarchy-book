@@ -4,7 +4,7 @@
 # (book/specs/0004-image-and-install.md).
 #
 #   sudo book/tools/build-image --device google-asurada [--output DIR] [--size 8G]
-#                               [--repo DIR] [--keep-mounted]
+#                               [--profile lite|full] [--repo DIR] [--keep-mounted]
 #
 # The image is Omarchy installed the way the ISO installs it, into the
 # Chromebook layout instead of an ESP: the default package set for
@@ -20,6 +20,11 @@
 # vboot-utils, util-linux and xz. --repo points at a local directory holding
 # the Chromebook repository (omarchy-chromebook.db and its packages) instead of
 # the published one, for testing packages before they are released.
+#
+# --profile lite (the default) builds the lite profile in: omarchy-lite
+# installed, its subtract.packages left out of the default set and its
+# add.packages put in, and its system half applied (book/specs/0005).
+# --profile full is upstream's default set as it is.
 
 set -euo pipefail
 shopt -s inherit_errexit
@@ -40,6 +45,7 @@ usage() {
 device=""
 output=$PWD
 size=8G
+profile=lite
 local_repo=""
 keep_mounted=0
 while (( $# )); do
@@ -47,12 +53,14 @@ while (( $# )); do
     --device) device=${2:?}; shift 2 ;;
     --output) output=${2:?}; shift 2 ;;
     --size) size=${2:?}; shift 2 ;;
+    --profile) profile=${2:?}; shift 2 ;;
     --repo) local_repo=$(readlink -f -- "${2:?}"); shift 2 ;;
     --keep-mounted) keep_mounted=1; shift ;;
     *) usage ;;
   esac
 done
 [[ -n $device ]] || usage
+[[ $profile == "lite" || $profile == "full" ]] || usage
 (( EUID == 0 )) || cb_fail "build-image needs root (loop devices, mounts, pacstrap)"
 [[ $(uname -m) == "aarch64" ]] || cb_fail "build-image runs on aarch64 (an Arch Linux ARM machine or container)"
 for tool in pacstrap arch-chroot pacman-conf losetup mkfs.btrfs parted cgpt xz; do
@@ -119,13 +127,27 @@ done
 # (the renames omacom/omarchy-iso's builder/aarch64-package-filter.sh makes).
 packages=(base base-devel openssh pipewire snapper tailscale omarchy-keyring omarchy-dev omarchy-settings-dev "$kernel")
 mapfile -t -O "${#packages[@]}" packages < <(cb_profile_lines "$cb_profile/packages")
-while IFS= read -r package; do
+mapfile -t defaults < <(OMARCHY_PATH=$repo_root "$repo_root/bin/omarchy-pkg-defaults" aarch64-chromebook)
+lite=$book/packages/omarchy-lite/share
+declare -A left_out=()
+if [[ $profile == "lite" ]]; then
+  while IFS= read -r package; do
+    left_out[$package]=1
+    # A name upstream renamed or dropped would silently stop being left out.
+    printf '%s\n' "${defaults[@]}" | grep -qxF "$package" ||
+      echo "Warning: the lite profile leaves out $package, which Omarchy's default set no longer names" >&2
+  done < <(cb_profile_lines "$lite/subtract.packages")
+  mapfile -t -O "${#packages[@]}" packages < <(cb_profile_lines "$lite/add.packages")
+  packages+=(omarchy-lite)
+fi
+for package in "${defaults[@]}"; do
+  [[ -z ${left_out[$package]:-} ]] || continue
   case $package in
     nvim) packages+=(neovim) ;;
     vi) packages+=(ex-vi-compat) ;;
     *) packages+=("$package") ;;
   esac
-done < <(OMARCHY_PATH=$repo_root "$repo_root/bin/omarchy-pkg-defaults" aarch64-chromebook)
+done
 
 # ── the disk ─────────────────────────────────────────────────────────────────
 
@@ -174,6 +196,10 @@ setup_env=(
   OMARCHY_LOG_TO_STDOUT=1
 )
 arch-chroot "$mnt" env --unset=XDG_RUNTIME_DIR "${setup_env[@]}" /usr/bin/omarchy-apply-system --defer-provisioning --first-install
+# The lite profile's system half, after Omarchy enabled its services. Its
+# user half runs for the owner when owner setup finishes (omarchy-chromebook's
+# setup-user).
+[[ $profile != "lite" ]] || arch-chroot "$mnt" omarchy-lite apply-system
 
 # The initramfs with the board's modules, then both kernel partitions.
 arch-chroot "$mnt" omarchy-chromebook-boot initramfs-config --device "$device" >/dev/null

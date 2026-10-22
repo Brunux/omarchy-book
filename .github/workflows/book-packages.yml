@@ -68,10 +68,26 @@ jobs:
       - name: Import the signing key
         env:
           BOOK_SIGNING_KEY: ${{ secrets.BOOK_SIGNING_KEY }}
+          BOOK_SIGNING_PASSPHRASE: ${{ secrets.BOOK_SIGNING_PASSPHRASE }}
         run: |
           if [ -n "$BOOK_SIGNING_KEY" ]; then
+            gnupg=/home/builder/.gnupg
+            sudo -u builder install -d -m 700 "$gnupg"
             printf '%s\n' "$BOOK_SIGNING_KEY" | sudo -u builder gpg --batch --import
             sudo -u builder gpg --list-secret-keys --with-colons | awk -F: '$1 == "fpr" { print $10; exit }' >/tmp/signing-key
+            # No one can type a passphrase here: makepkg and repo-add call gpg
+            # themselves, so gpg reads it from a file through loopback pinentry.
+            if [ -n "$BOOK_SIGNING_PASSPHRASE" ]; then
+              printf '%s' "$BOOK_SIGNING_PASSPHRASE" | sudo -u builder install -m 600 /dev/stdin "$gnupg/passphrase"
+              printf 'pinentry-mode loopback\npassphrase-file %s/passphrase\n' "$gnupg" | sudo -u builder tee -a "$gnupg/gpg.conf" >/dev/null
+              echo allow-loopback-pinentry | sudo -u builder tee -a "$gnupg/gpg-agent.conf" >/dev/null
+              sudo -u builder gpgconf --kill gpg-agent || true
+            fi
+            # Fail here, in seconds, rather than after the first package builds.
+            if ! echo test | sudo -u builder gpg --batch --yes --local-user "$(cat /tmp/signing-key)" --detach-sign -o /dev/null; then
+              echo "::error::BOOK_SIGNING_KEY cannot sign without help: if the key has a passphrase, add it as the BOOK_SIGNING_PASSPHRASE secret"
+              exit 1
+            fi
           fi
       - name: Build
         run: |

@@ -1,0 +1,156 @@
+#!/bin/bash
+
+# Where a running system's memory goes, to measure a session against the
+# budget in book/specs/0005-memory-budget.md.
+#
+#   sudo book/tools/memory-report [--top N] > report.txt
+#
+# Plain bash and awk, so it runs as it is on this port, on omarchybook and on
+# LazyOS (Debian), and the three can be compared line for line. Run it as root
+# to see every process; without root it sees only your own.
+#
+# The measurement the budget is defined on: boot, log in, leave the desktop
+# idle for 60 seconds, then run this. "Used" is what `free` reports as used
+# (MemTotal - MemFree - Buffers - Cached - SReclaimable).
+#
+# Per process it reports PSS (proportional set size: private memory plus a
+# fair share of what is shared), which adds up across processes without
+# counting a shared library once per user, and its swapped-out share. Per
+# systemd unit it reports the cgroup's own count, which includes the page cache
+# the unit caused. GPU memory comes from each DRM client's fdinfo
+# (drm-resident-*), which panfrost and msm report.
+
+# A report: one unreadable process or a missing tool must not end it early.
+set -uo pipefail
+
+top=25
+while (( $# )); do
+  case $1 in
+    --top) top=${2:?}; shift 2 ;;
+    *) echo "Usage: memory-report [--top N]" >&2; exit 2 ;;
+  esac
+done
+
+kib() { awk -v k="$1" 'BEGIN { printf "%7.1f MiB", k / 1024 }'; }
+meminfo() { awk -v key="$1:" '$1 == key { print $2; exit }' /proc/meminfo; }
+
+echo "# memory-report, $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+echo "# host: $(uname -n), kernel $(uname -r), $(sed -n 's/^PRETTY_NAME="\(.*\)"/\1/p' /etc/os-release 2>/dev/null)"
+if [[ -r /proc/device-tree/model ]]; then
+  echo "# board: $(tr -d '\0' </proc/device-tree/model)"
+fi
+echo "# uptime: $(awk '{ printf "%d s", $1 }' /proc/uptime), run as uid $EUID"
+echo
+
+# ── the system ───────────────────────────────────────────────────────────────
+
+total=$(meminfo MemTotal)
+free=$(meminfo MemFree)
+available=$(meminfo MemAvailable)
+buffers=$(meminfo Buffers)
+cached=$(meminfo Cached)
+sreclaimable=$(meminfo SReclaimable)
+used=$(( total - free - buffers - cached - sreclaimable ))
+
+echo "## System"
+printf '%-34s %s\n' "Total" "$(kib "$total")"
+printf '%-34s %s   <- the budget is on this\n' "Used (as free reports it)" "$(kib "$used")"
+printf '%-34s %s\n' "Total - Available" "$(kib $(( total - available )))"
+printf '%-34s %s\n' "Page cache" "$(kib "$cached")"
+for key in AnonPages Shmem Slab SUnreclaim KernelStack PageTables VmallocUsed Percpu CmaTotal CmaFree; do
+  value=$(meminfo "$key")
+  [[ -n $value ]] && printf '%-34s %s\n' "$key" "$(kib "$value")"
+done
+swap_total=$(meminfo SwapTotal)
+swap_free=$(meminfo SwapFree)
+printf '%-34s %s of %s\n' "Swap used" "$(kib $(( swap_total - swap_free )))" "$(kib "$swap_total")"
+for zram in /sys/block/zram*; do
+  [[ -r $zram/mm_stat ]] || continue
+  read -r orig compr memused _ <"$zram/mm_stat"
+  printf '%-34s %s stored in %s (%s)\n' "${zram##*/} ($(cat "$zram/comp_algorithm" 2>/dev/null | grep -o '\[[a-z0-9-]*\]' || echo '?'))" \
+    "$(kib $(( orig / 1024 )))" "$(kib $(( memused / 1024 )))" "$(awk -v o="$orig" -v c="$compr" 'BEGIN { printf c ? "%.1fx" : "-", o / (c ? c : 1) }')"
+done
+echo
+
+echo "## tmpfs (counted as used memory)"
+df -k --output=used,target -t tmpfs 2>/dev/null | tail -n +2 | sort -rn | head -n 8 | while read -r used_k target; do
+  (( used_k > 0 )) && printf '%-34s %s\n' "$target" "$(kib "$used_k")"
+done
+echo
+
+# ── processes ────────────────────────────────────────────────────────────────
+
+# One line per process: pid, PSS, anonymous PSS, swap PSS, unit, command.
+# smaps_rollup gives a process' totals in one read; the unit is the last
+# component of its cgroup path, so a service, a scope or the user's slice.
+processes=$(mktemp)
+trap 'rm -f "$processes"' EXIT
+for dir in /proc/[0-9]*; do
+  pid=${dir#/proc/}
+  [[ -r $dir/smaps_rollup ]] || continue
+  read -r pss anon swappss < <(awk '
+    $1 == "Pss:" { p = $2 } $1 == "Pss_Anon:" { a = $2 } $1 == "SwapPss:" { s = $2 }
+    END { printf "%d %d %d\n", p, a, s }' "$dir/smaps_rollup" 2>/dev/null) || continue
+  (( pss > 0 )) || continue
+  unit=$(sed -n 's|^0::.*/||p' "$dir/cgroup" 2>/dev/null)
+  command=$(tr '\0\n\t' '   ' <"$dir/cmdline" 2>/dev/null | cut -c1-80)
+  [[ -n $command ]] || command="[$(cat "$dir/comm" 2>/dev/null)]"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$pid" "$pss" "$anon" "$swappss" "${unit:--}" "$command" >>"$processes"
+done
+
+echo "## Processes by PSS (top $top)"
+printf '%-12s %-12s %-12s %-34s %s\n' "PSS" "anon" "swapped" "unit" "command"
+sort -t$'\t' -k2,2nr "$processes" | head -n "$top" | while IFS=$'\t' read -r pid pss anon swappss unit command; do
+  printf '%-12s %-12s %-12s %-34s %s\n' "$(kib "$pss")" "$(kib "$anon")" "$(kib "$swappss")" "${unit:0:34}" "$command"
+done
+printf '%-34s %s\n' "Sum of every process' PSS" "$(kib "$(awk -F'\t' '{ s += $2 } END { print s + 0 }' "$processes")")"
+echo
+
+echo "## By program (PSS summed over its processes)"
+awk -F'\t' '{
+  split($6, words, " "); name = words[1]; sub(".*/", "", name)
+  pss[name] += $2; count[name]++
+} END { for (name in pss) printf "%d\t%d\t%s\n", pss[name], count[name], name }' "$processes" |
+  sort -rn | head -n "$top" | while IFS=$'\t' read -r pss count name; do
+    printf '%-12s %3s x %s\n' "$(kib "$pss")" "$count" "$name"
+  done
+echo
+
+# ── units and GPU ────────────────────────────────────────────────────────────
+
+if command -v systemctl >/dev/null; then
+  echo "## systemd units by cgroup memory (includes their page cache)"
+  {
+    systemctl list-units --type=service,scope --state=running --no-legend --plain 2>/dev/null | awk '{ print "system " $1 }'
+    if [[ -n ${SUDO_USER:-} ]]; then
+      user_id=$(id -u "$SUDO_USER")
+      sudo -u "$SUDO_USER" XDG_RUNTIME_DIR=/run/user/$user_id systemctl --user list-units --type=service,scope --state=running --no-legend --plain 2>/dev/null | awk '{ print "user " $1 }'
+    fi
+  } | while read -r scope unit; do
+    if [[ $scope == "user" ]]; then
+      current=$(sudo -u "$SUDO_USER" XDG_RUNTIME_DIR=/run/user/$user_id systemctl --user show -p MemoryCurrent --value "$unit" 2>/dev/null)
+    else
+      current=$(systemctl show -p MemoryCurrent --value "$unit" 2>/dev/null)
+    fi
+    [[ $current =~ ^[0-9]+$ ]] && (( current > 0 )) && printf '%s\t%s %s\n' "$(( current / 1024 ))" "$scope" "$unit"
+  done | sort -rn | head -n "$top" | while IFS=$'\t' read -r k unit; do
+    printf '%-12s %s\n' "$(kib "$k")" "$unit"
+  done
+  echo
+fi
+
+echo "## GPU memory by DRM client (fdinfo drm-resident-*)"
+for fdinfo in /proc/[0-9]*/fdinfo/*; do
+  grep -q '^drm-client-id:' "$fdinfo" 2>/dev/null || continue
+  awk -v pid="$(cut -d/ -f3 <<<"$fdinfo")" '
+    $1 == "drm-driver:" { driver = $2 } $1 == "drm-client-id:" { client = $2 }
+    $1 ~ /^drm-resident-/ { kib = $2; if ($3 == "MiB") kib *= 1024; if ($3 == "GiB") kib *= 1048576; resident += kib }
+    END { if (client != "") printf "%s\t%s\t%s\t%d\n", driver, client, pid, resident }' "$fdinfo" 2>/dev/null
+done | sort -u -t$'\t' -k1,2 | sort -t$'\t' -k4,4nr | head -n "$top" | while IFS=$'\t' read -r driver _ pid resident; do
+
+  printf '%-12s %-10s %s\n' "$(kib "$resident")" "$driver" "$(tr '\0' ' ' </proc/"$pid"/cmdline 2>/dev/null | cut -c1-60)"
+done
+echo
+
+echo "## Raw processes (pid, pss_kib, anon_kib, swappss_kib, unit, command)"
+sort -t$'\t' -k2,2nr "$processes"

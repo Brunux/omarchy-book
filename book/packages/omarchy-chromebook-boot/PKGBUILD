@@ -1,0 +1,29 @@
+# Maintainer: Omarchy Book
+#
+# The boot chain of ARM Chromebooks (aarch64-chromebook) for Omarchy: what
+# omarchy-lifecycle-dispatch runs for setup-boot and update-verify, the
+# mkinitcpio post hook that writes the signed kernel partition, and the boot
+# service that marks it good. Built from this directory of the omarchy-book
+# repository, which `install` stages with the board profiles from book/devices.
+
+pkgname=omarchy-chromebook-boot
+pkgver=$(<version)
+pkgrel=1
+pkgdesc='Omarchy boot chain for ARM Chromebooks: signed depthcharge kernel partitions, updated A/B'
+arch=(aarch64)
+url='https://github.com/Brunux/omarchy-book/tree/quattro/book/packages/omarchy-chromebook-boot'
+license=(MIT)
+# depthchargectl builds the FIT; cgpt and futility (vboot-utils) set the
+# partition flags and check the image; lsblk, findfs and blockdev
+# (util-linux) find the partitions; mkinitcpio builds the initramfs it carries.
+depends=(bash coreutils depthcharge-tools diffutils mkinitcpio systemd util-linux vboot-utils)
+checkdepends=(bash coreutils diffutils util-linux)
+backup=(etc/mkinitcpio.conf.d/50-omarchy-chromebook.conf)
+
+package() {
+  "$startdir/install" "$pkgdir" "$startdir/../../devices"
+}
+
+check() {
+  "$startdir/test/all"
+}

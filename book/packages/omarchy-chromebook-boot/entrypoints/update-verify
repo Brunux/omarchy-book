@@ -1,0 +1,5 @@
+#!/bin/bash
+
+# update-verify: the kernel partition that boots next carries the installed
+# kernel, initramfs, device trees and command line. Read-only.
+exec /usr/bin/omarchy-chromebook-boot verify

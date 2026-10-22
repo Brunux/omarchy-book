@@ -1,0 +1,46 @@
+#!/bin/bash
+
+# Stage omarchy-chromebook-boot into DESTDIR. Enables and starts nothing.
+#
+#   install DESTDIR [DEVICES]
+#
+# DEVICES is the directory of device profiles to ship (book/devices by
+# default); each board's runtime files are copied, its build-only ones are not.
+
+set -euo pipefail
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
+
+destination=${1:?Usage: ./install DESTDIR [DEVICES]}
+devices=${2:-../../devices}
+[[ $destination == /* && $destination != "/" ]] || { echo "Use an absolute staging directory" >&2; exit 1; }
+[[ -d $devices ]] || { echo "No device profiles at $devices" >&2; exit 1; }
+
+home=$destination/usr/lib/omarchy-chromebook-boot
+install -Dm755 bin/omarchy-chromebook-boot "$home/bin/omarchy-chromebook-boot"
+install -d "$destination/usr/bin"
+ln -sfn ../lib/omarchy-chromebook-boot/bin/omarchy-chromebook-boot "$destination/usr/bin/omarchy-chromebook-boot"
+for file in lib/*.sh; do install -Dm644 "$file" "$home/lib/${file##*/}"; done
+
+# The lifecycle dispatcher runs these from its fixed path.
+for file in entrypoints/*; do install -Dm755 "$file" "$destination/usr/lib/omarchy/chromebook-boot/${file##*/}"; done
+
+while IFS= read -r -d '' file; do
+  if [[ -x $file ]]; then
+    install -Dm755 "$file" "$destination/${file#files/}"
+  else
+    install -Dm644 "$file" "$destination/${file#files/}"
+  fi
+done < <(find files -type f -print0)
+
+share=$destination/usr/share/omarchy-chromebook-boot
+for key in devkeys/*; do install -Dm644 "$key" "$share/devkeys/${key##*/}"; done
+
+for profile in "$devices"/*/; do
+  codename=$(basename "$profile")
+  for file in deviceinfo compatible kernel kernel-cmdline.conf modules-initfs; do
+    [[ -f $profile/$file ]] && install -Dm644 "$profile/$file" "$share/devices/$codename/$file"
+  done
+done
+
+install -Dm644 README.md "$destination/usr/share/doc/omarchy-chromebook-boot/README.md"
+install -Dm644 LICENSE "$destination/usr/share/licenses/omarchy-chromebook-boot/LICENSE"

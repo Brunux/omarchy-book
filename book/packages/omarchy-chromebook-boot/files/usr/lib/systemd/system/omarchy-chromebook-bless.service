@@ -1,0 +1,15 @@
+[Unit]
+Description=Mark the running Chromebook kernel partition as good
+Documentation=https://github.com/Brunux/omarchy-book/blob/quattro/book/specs/0003-boot-package.md
+# A kernel partition written by an update is tried once. Once its system is up,
+# it is marked successful, so depthcharge keeps booting it; one that never gets
+# here is skipped on the next boot, and the previous partition boots instead.
+ConditionKernelCommandLine=kern_guid
+After=local-fs.target systemd-user-sessions.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/omarchy-chromebook-boot bless
+
+[Install]
+WantedBy=multi-user.target

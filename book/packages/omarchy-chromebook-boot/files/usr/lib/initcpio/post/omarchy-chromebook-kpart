@@ -1,0 +1,7 @@
+#!/bin/bash
+
+# mkinitcpio runs this after it builds an image, with the kernel, the initramfs
+# and (when it built one) the UKI. A Chromebook boots none of them from /boot:
+# the board's kernel and initramfs go into the signed kernel partition, so a
+# kernel update, a module option or `mkinitcpio -P` all end here.
+exec /usr/bin/omarchy-chromebook-boot mkinitcpio-post "${1:-}" "${2:-}"

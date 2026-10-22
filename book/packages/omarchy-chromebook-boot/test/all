@@ -1,0 +1,13 @@
+#!/bin/bash
+
+# Runs every test of this package. Each file is independent and needs only
+# this directory.
+
+set -uo pipefail
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")" || exit 1
+
+failed=0
+for test in ./*-test.sh; do
+  bash "$test" || failed=1
+done
+exit "$failed"

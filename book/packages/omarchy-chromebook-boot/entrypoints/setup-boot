@@ -1,0 +1,6 @@
+#!/bin/bash
+
+# setup-boot [image-first-boot]: record the board, write its initramfs modules
+# drop-in, enable the boot blessing, and write the kernel partition (on an
+# image's first boot, ask for the deferred rebuild that writes it instead).
+exec /usr/bin/omarchy-chromebook-boot setup "$@"

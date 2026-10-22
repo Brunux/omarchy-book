@@ -1,0 +1,397 @@
+#!/bin/bash
+
+# omarchy-chromebook-boot: build, write, verify and bless a Chromebook's
+# signed kernel partitions (book/specs/0003-boot-package.md).
+#
+# The lifecycle entrypoints, the mkinitcpio post hook, the boot service and the
+# image builder all come here, so there is one implementation of each step.
+
+set -euo pipefail
+# A failure inside $(...) stops the command too, as it would outside one.
+shopt -s inherit_errexit
+
+self=$(readlink -f -- "${BASH_SOURCE[0]}")
+lib=${self%/bin/*}/lib
+for module in common device cmdline kpart gpt layout; do
+  # shellcheck disable=SC1090
+  source "$lib/$module.sh"
+done
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: omarchy-chromebook-boot <command> [options]
+
+  status                       the board, the kernel partitions and what boots next
+  device [--root R]            the board's codename
+  cmdline [--root R] [--device D]
+                               the command line a kernel partition gets
+  build --output FILE [--root R] [--device D]
+                               build and check a kernel partition image
+  write                        build from this system and write the partition
+                               that is not running, to be tried on the next boot
+  write-disk --disk DISK --root R [--device D]
+                               build from the system at R and write every kernel
+                               partition of DISK (image builds, installs)
+  install-internal --disk DISK [--yes]
+                               copy this system onto DISK (the internal eMMC),
+                               erasing it, and make DISK bootable
+  verify                       check that the partition booting next is current
+  bless                        mark the running partition as good
+  setup [image-first-boot]     the setup-boot lifecycle operation
+  initramfs-config [--root R] [--device D]
+                               write the board's mkinitcpio modules drop-in
+  mkinitcpio-post KERNEL INITRAMFS
+                               what mkinitcpio's post hook runs
+EOF
+  exit 2
+}
+
+command=${1:-}
+[[ -n $command ]] || usage
+shift
+
+root=/
+device=""
+output=""
+disk=""
+assume_yes=0
+positional=()
+while (( $# )); do
+  case $1 in
+    --root) root=${2:?--root needs a directory}; shift 2 ;;
+    --device) device=${2:?--device needs a codename}; shift 2 ;;
+    --output) output=${2:?--output needs a file}; shift 2 ;;
+    --disk) disk=${2:?--disk needs a block device}; shift 2 ;;
+    --yes) assume_yes=1; shift ;;
+    --*) usage ;;
+    *) positional+=("$1"); shift ;;
+  esac
+done
+
+cb_init "$root"
+
+# ── writing ──────────────────────────────────────────────────────────────────
+
+# Builds the kpart for this booted system into the staging area and leaves its
+# inputs beside it. Sets staging_kpart and staging_inputs.
+stage() {
+  mkdir -p "$cb_state/staging"
+  staging_kpart=$cb_state/staging/kpart
+  staging_inputs=$cb_state/staging/inputs
+  cb_inputs >"$staging_inputs.tmp" || exit 1
+  cb_kpart_build "$staging_kpart"
+  mv -f "$staging_inputs.tmp" "$staging_inputs"
+}
+
+# dd <kpart> onto <partition>, then read it back.
+write_partition() {
+  local kpart=$1 partition=$2 size
+
+  size=$(stat -c %s "$kpart")
+  (( size <= $(blockdev --getsize64 "$partition") )) ||
+    cb_fail "the kernel partition image ($size bytes) does not fit in $partition"
+  dd if="$kpart" of="$partition" bs=1M conv=fsync status=none
+  [[ $(cb_partition_sha256 "$partition" "$size") == "$(cb_sha256 "$kpart")" ]] ||
+    cb_fail "$partition does not read back what was written to it"
+}
+
+# True when partition <number>/<uuid> holds a kpart built from <inputs-file>.
+current() {
+  local path=$1 uuid=$2 inputs=$3 size sha
+
+  diff -q <(cb_record_inputs "$uuid" 2>/dev/null) "$inputs" >/dev/null || return 1
+  size=$(cb_record_get "$uuid" kpart_size) || return 1
+  sha=$(cb_record_get "$uuid" kpart_sha256) || return 1
+  [[ $(cb_partition_sha256 "$path" "$size") == "$sha" ]]
+}
+
+cmd_write() {
+  local next_path next_number next_uuid backup
+
+  cb_booted_on_depthcharge || cb_fail "not a Chromebook booted by depthcharge (or this is a chroot): nothing to write"
+  cb_device_resolve
+  cb_inputs_resolve
+  cb_gpt_booted
+
+  mkdir -p "$cb_state"
+  cb_inputs >"$cb_state/current-inputs" || exit 1
+  if read -r next_path next_number next_uuid < <(cb_gpt_next_boot "$cb_disk") &&
+    current "$next_path" "$next_uuid" "$cb_state/current-inputs"; then
+    echo "The kernel partition booting next (partition $next_number) is up to date."
+    return 0
+  fi
+
+  stage
+  cb_gpt_target
+  if [[ $cb_target_mode == "in-place" ]]; then
+    # One kernel partition: nothing to fall back to, so keep what it held.
+    backup=$cb_state/previous-$cb_target_uuid.kpart
+    head -c "$(blockdev --getsize64 "$cb_target_path")" "$cb_target_path" >"$backup"
+    cb_note "Only one kernel partition; its previous contents are in $backup"
+  fi
+
+  write_partition "$staging_kpart" "$cb_target_path"
+  cb_record_write "$cb_target_uuid" "$staging_kpart" "$staging_inputs"
+
+  if [[ $cb_target_mode == "ab" ]]; then
+    cgpt prioritize -i "$cb_target_number" "$cb_disk"
+    cgpt add -i "$cb_target_number" -T 1 -S 0 "$cb_disk"
+    echo "Wrote partition $cb_target_number; the next boot tries it once and falls back to partition $cb_booted_number if it fails."
+  else
+    cgpt add -i "$cb_target_number" -S 1 "$cb_disk"
+    echo "Wrote partition $cb_target_number in place."
+  fi
+}
+
+# An image or a fresh install: every kernel partition of <disk> gets the same
+# kpart, built from the system at the target root, and boots it as good.
+write_disk() {
+  local target=$1 path number uuid priority line
+  local -a parts=()
+
+  mapfile -t parts < <(cb_gpt_kernel_parts "$target")
+  (( ${#parts[@]} )) || cb_fail "$target has no ChromeOS kernel partition"
+
+  stage
+  # The first partition boots first; each next one is one priority lower.
+  priority=$(( ${#parts[@]} + 1 ))
+  for line in "${parts[@]}"; do
+    read -r path number uuid <<<"$line"
+    write_partition "$staging_kpart" "$path"
+    cb_record_write "$uuid" "$staging_kpart" "$staging_inputs"
+    cgpt add -i "$number" -P "$priority" -T 0 -S 1 "$target"
+    echo "Wrote partition $number (priority $priority)."
+    (( priority-- ))
+  done
+}
+
+cmd_write_disk() {
+  [[ -n $disk ]] || usage
+  [[ -b $disk || -f $disk ]] || cb_fail "not a block device: $disk"
+  cb_device_resolve "$device"
+  cb_inputs_resolve
+  write_disk "$disk"
+}
+
+# The running system, copied onto <disk> with the Chromebook layout: the way a
+# system booted from a card moves to the internal eMMC. The copy keeps the
+# machine's identity (owner, machine-id, host keys): it is the same machine on
+# other storage. Emptying /etc/machine-id would make systemd apply every
+# preset on the next boot, and Arch's default preset disables what Omarchy
+# enabled.
+cmd_install_internal() {
+  local mountpoint=/run/omarchy-chromebook-install root_disk part answer entry source partition
+
+  [[ -n $disk ]] || usage
+  [[ -b $disk ]] || cb_fail "not a block device: $disk"
+  cb_booted_on_depthcharge || cb_fail "run this on a Chromebook booted by depthcharge (from its card), not in a chroot"
+  cb_device_resolve
+  cb_gpt_booted
+  [[ $disk != "$cb_disk" ]] || cb_fail "$disk is the disk this system runs from"
+  root_disk=/dev/$(lsblk -nro PKNAME "$(findmnt -nvo SOURCE /)" | head -n1)
+  [[ $disk != "$root_disk" ]] || cb_fail "$disk holds this system's root filesystem"
+  (( EUID == 0 )) || cb_fail "erasing $disk needs root: sudo omarchy-chromebook-boot install-internal --disk $disk"
+  while read -r part; do
+    findmnt -rn -S "$part" >/dev/null && cb_fail "$part is mounted; unmount it first"
+  done < <(lsblk -nrpo NAME "$disk" | tail -n +2)
+
+  lsblk -o NAME,SIZE,TYPE,PARTLABEL,FSTYPE,MOUNTPOINTS "$disk"
+  if (( ! assume_yes )); then
+    read -r -p "Everything on $disk is erased. Type ${disk##*/} to go on: " answer
+    [[ $answer == "${disk##*/}" ]] || cb_fail "not confirmed; nothing was changed"
+  fi
+
+  cb_layout_create "$disk"
+  partition=$(cb_layout_partition "$disk" 3)
+  cb_layout_partition "$disk" 1 >/dev/null
+  cb_layout_partition "$disk" 2 >/dev/null
+  trap 'cb_layout_umount "$mountpoint"' EXIT
+  cb_layout_format_mount "$partition" "$mountpoint"
+
+  # One filesystem at a time, so /proc, /sys, /dev and /run stay empty
+  # mountpoints in the copy instead of being left out or filled.
+  for entry in "${cb_layout_subvolumes[@]}"; do
+    source=${entry#*:}
+    [[ $source != /var/cache/pacman/pkg ]] || continue
+    echo "Copying $source"
+    rsync -aHAX --numeric-ids --one-file-system --info=stats0 "${source%/}/" "$mountpoint${source%/}/"
+  done
+  # Snapper keeps its snapshots in a subvolume nested in the root, which the
+  # copy left as an empty directory: snapper needs the subvolume back, empty.
+  if btrfs subvolume show /.snapshots >/dev/null 2>&1; then
+    rmdir "$mountpoint/.snapshots"
+    btrfs subvolume create "$mountpoint/.snapshots" >/dev/null
+    chmod 750 "$mountpoint/.snapshots"
+  fi
+  cb_layout_fstab "$cb_root_uuid" >"$mountpoint/etc/fstab"
+
+  cb_init "$mountpoint"
+  cb_device_resolve "$cb_device"
+  cb_inputs_resolve
+  write_disk "$disk"
+  echo "Done. Shut down, remove the card, and the Chromebook boots from $disk."
+}
+
+cmd_verify() {
+  local next_path next_number next_uuid
+
+  cb_booted_on_depthcharge || cb_fail "not a Chromebook booted by depthcharge: its kernel partitions can't be checked from here"
+  cb_device_resolve
+  cb_inputs_resolve
+  cb_gpt_booted
+
+  read -r next_path next_number next_uuid < <(cb_gpt_next_boot "$cb_disk") ||
+    cb_fail "no kernel partition on $cb_disk is bootable"
+  mkdir -p "$cb_state"
+  cb_inputs >"$cb_state/current-inputs" || exit 1
+  if ! diff -q <(cb_record_inputs "$next_uuid" 2>/dev/null) "$cb_state/current-inputs" >/dev/null; then
+    cb_fail "partition $next_number, which boots next, was not built from the installed kernel, initramfs and command line; run: sudo omarchy-chromebook-boot write"
+  fi
+  current "$next_path" "$next_uuid" "$cb_state/current-inputs" ||
+    cb_fail "partition $next_number does not hold the image recorded for it; run: sudo omarchy-chromebook-boot write"
+  echo "Partition $next_number boots next and carries $cb_release with the current initramfs and command line."
+}
+
+cmd_bless() {
+  cb_booted_on_depthcharge || exit 0
+  cb_gpt_booted
+  if (( $(cb_gpt_attr "$cb_disk" "$cb_booted_number" S) != 1 )); then
+    cgpt add -i "$cb_booted_number" -S 1 "$cb_disk"
+    echo "Kernel partition $cb_booted_number booted; marked successful."
+  fi
+}
+
+# ── setup ────────────────────────────────────────────────────────────────────
+
+# The board's early modules as a mkinitcpio drop-in. Prints "changed" when the
+# file is new or different.
+cmd_initramfs_config() {
+  local file=$cb_root/etc/mkinitcpio.conf.d/60-omarchy-chromebook-device.conf module modules=""
+
+  cb_device_resolve "$device"
+  while IFS= read -r module; do
+    [[ $module =~ ^[A-Za-z0-9_-]+$ ]] || cb_fail "not a module name in the $cb_device profile: $module"
+    modules+=" $module"
+  done < <(cb_profile_lines "$cb_profile/modules-initfs")
+
+  mkdir -p "${file%/*}"
+  {
+    echo "# Written by omarchy-chromebook-boot for the $cb_device board: the modules its"
+    echo "# initramfs needs before the root filesystem (its pmaports modules-initfs)."
+    echo "MODULES+=(${modules# })"
+  } >"$file.tmp"
+  if cmp -s "$file.tmp" "$file"; then
+    rm -f "$file.tmp"
+  else
+    mv -f "$file.tmp" "$file"
+    echo changed
+  fi
+}
+
+cmd_setup() {
+  local first_boot=0 changed
+
+  [[ ${positional[0]:-} != "image-first-boot" ]] || first_boot=1
+  cb_device_resolve
+  mkdir -p "$cb_config"
+  [[ $(cb_device_configured 2>/dev/null) == "$cb_device" ]] || printf '%s\n' "$cb_device" >"$cb_config/device"
+
+  changed=$(cmd_initramfs_config) || exit 1
+  systemctl enable --quiet omarchy-chromebook-bless.service
+
+  if (( first_boot )); then
+    # The first boot's deferred setup rebuilds once after its last step, and
+    # the rebuild's post hook writes the kernel partition.
+    mkdir -p "$cb_root/var/lib/omarchy/image"
+    : >"$cb_root/var/lib/omarchy/image/boot-rebuild"
+  elif ! cb_booted_on_depthcharge; then
+    cb_note "Not a booted Chromebook: the kernel partition is written on its first boot."
+  elif [[ -n $changed ]]; then
+    mkinitcpio -p "$cb_pkgbase"
+  else
+    cmd_write
+  fi
+}
+
+cmd_mkinitcpio_post() {
+  local initramfs=${positional[1]:-}
+
+  [[ -n $initramfs ]] || usage
+  # First, before the board is even resolved: an image build installs the
+  # kernel in a chroot, where nothing may be written and no board may be
+  # configured yet. The image builder writes the partitions itself.
+  if ! cb_booted_on_depthcharge; then
+    cb_note "omarchy-chromebook-boot: not a booted Chromebook, so no kernel partition is written."
+    exit 0
+  fi
+  cb_device_resolve
+  # Another kernel's image, or a fallback image, never boots from here.
+  [[ $initramfs == "/boot/initramfs-$cb_pkgbase.img" ]] || exit 0
+  cmd_write
+}
+
+# ── reading ──────────────────────────────────────────────────────────────────
+
+cmd_status() {
+  local path number uuid priority tries successful notes release next_uuid="" line
+
+  cb_device_resolve
+  echo "Device:  $cb_device (${cb_deviceinfo[name]:-unnamed})"
+  echo "Kernel:  $cb_pkgbase"
+  if ! cb_booted_on_depthcharge; then
+    echo "Booted:  not by depthcharge, or in a chroot"
+    return 0
+  fi
+
+  cb_gpt_booted
+  # Resolved in a subshell first: a board whose kernel is not installed still
+  # gets its partitions listed.
+  if (cb_inputs_resolve) 2>/dev/null; then
+    cb_inputs_resolve
+    echo "Release: $cb_release"
+    mkdir -p "$cb_state"
+    cb_inputs >"$cb_state/current-inputs" || exit 1
+  fi
+  if line=$(cb_gpt_next_boot "$cb_disk"); then
+    read -r _ _ next_uuid <<<"$line"
+  fi
+
+  echo "Kernel partitions on $cb_disk:"
+  while read -r path number uuid; do
+    priority=$(cb_gpt_attr "$cb_disk" "$number" P)
+    tries=$(cb_gpt_attr "$cb_disk" "$number" T)
+    successful=$(cb_gpt_attr "$cb_disk" "$number" S)
+    notes=""
+    [[ $number != "$cb_booted_number" ]] || notes+=" running"
+    [[ $uuid != "$next_uuid" ]] || notes+=" next"
+    if [[ -f $cb_state/current-inputs ]] && current "$path" "$uuid" "$cb_state/current-inputs"; then
+      notes+=" current"
+    elif release=$(cb_record_get "$uuid" release); then
+      notes+=" holds $release"
+    else
+      notes+=" unrecorded"
+    fi
+    printf '  %-3s priority %-2s tries %-2s successful %s %s\n' "$number" "$priority" "$tries" "$successful" "${notes# }"
+  done < <(cb_gpt_kernel_parts "$cb_disk")
+}
+
+case $command in
+  status) cmd_status ;;
+  device) cb_device_resolve "$device"; echo "$cb_device" ;;
+  cmdline) cb_device_resolve "$device"; cb_cmdline; echo ;;
+  build)
+    [[ -n $output ]] || usage
+    cb_device_resolve "$device"
+    cb_inputs_resolve
+    cb_kpart_build "$output"
+    ;;
+  write) cmd_write ;;
+  write-disk) cmd_write_disk ;;
+  install-internal) cmd_install_internal ;;
+  verify) cmd_verify ;;
+  bless) cmd_bless ;;
+  setup) cmd_setup ;;
+  initramfs-config) cmd_initramfs_config ;;
+  mkinitcpio-post) cmd_mkinitcpio_post ;;
+  *) usage ;;
+esac

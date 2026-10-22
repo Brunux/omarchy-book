@@ -15,10 +15,15 @@ How to go from this repository to a card that boots a Chromebook: packages first
 
 Once, as the repository's maintainer:
 
-1. Make a signing key: `gpg --quick-gen-key "Omarchy Book <you@example.com>" ed25519 sign never`.
-2. Add its armored private key (`gpg --armor --export-secret-keys <id>`) as the repository secret **`BOOK_SIGNING_KEY`** (Settings → Secrets and variables → Actions).
-   If the key has a passphrase, add it as a second secret, **`BOOK_SIGNING_PASSPHRASE`**: nobody can type it in CI, so the workflow hands it to gpg from a file. The workflow test-signs right after importing the key and stops with an explanation if signing would fail.
-3. Commit its public half as `book/keys/omarchy-book.gpg` (`gpg --armor --export <id>`), so the image builder trusts it.
+1. Make a signing key **for CI, without a passphrase**: the workflow signs unattended, so nobody can type one. Keep it for this repository only, so it signs nothing else:
+
+   ```bash
+   gpg --batch --passphrase '' --quick-gen-key "Omarchy Book CI <you@example.com>" ed25519 sign never
+   gpg --list-secret-keys "Omarchy Book CI"          # its fingerprint is the <id> below
+   ```
+
+2. Add its armored private key (`gpg --armor --export-secret-keys <id>`) as the repository secret **`BOOK_SIGNING_KEY`** (Settings → Secrets and variables → Actions). The workflow test-signs right after importing it and stops with an explanation if the key can't sign unattended.
+3. Commit its public half as `book/keys/omarchy-book.gpg` (`gpg --armor --export <id> > book/keys/omarchy-book.gpg`), so the image builder and machines trust it, and put its fingerprint in `book/keys/README.md`.
 
 Then, each time: Actions → **Book packages** → Run workflow on `quattro`, with **build** checked, and **publish** to update the `chromebook-edge-aarch64` release the Chromebook pacman template reads. GitHub offers a manually run workflow only once it is on the default branch, and the publish job runs only from `quattro`, so this works after the `chromebook-platform` branch is merged. The kernel dominates the build time (not measured yet; expect an hour or more). Without the secret the packages are built unsigned, which is fine for testing (download the artifact) but not for publishing.
 
